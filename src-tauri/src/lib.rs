@@ -29,6 +29,18 @@ pub struct CreateFileInput { pub project_slug: String, pub parent_path: String, 
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateFolderInput { pub project_slug: String, pub parent_path: String, pub name: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenamePathInput { pub project_slug: String, pub path: String, pub new_name: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyPathToInput { pub project_slug: String, pub path: String, pub target_parent_path: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UploadFileInput { pub project_slug: String, pub parent_path: String, pub name: String, pub bytes: Vec<u8> }
 
 #[derive(Debug, Deserialize)]
@@ -220,18 +232,8 @@ fn write_if_missing(path: &Path, content: &str) -> Result<(), String> { if !path
 fn create_project(name: String) -> Result<Project, String> {
     let slug=slugify(&name); if slug.is_empty(){return Err("Project name must include letters or numbers".into())}
     let root=workspace_root()?.join(&slug); fs::create_dir_all(&root).map_err(|e| e.to_string())?; ensure_inside_workspace(&root)?;
-    for dir in ["profile","sources/imports","jobs/normalized","jobs/ranked","jobs/approved","applications","resources","chats"] { fs::create_dir_all(root.join(dir)).map_err(|e| e.to_string())?; }
     let created_at=now(); let project=Project{id:uuid::Uuid::new_v4().to_string(),name,slug:slug.clone(),root_path:root.to_string_lossy().to_string(),created_at:created_at.clone()};
-    write_if_missing(&root.join("project.json"), &serde_json::to_string_pretty(&serde_json::json!({"id":project.id,"name":project.name,"slug":project.slug,"schemaVersion":2,"createdAt":created_at,"folders":{"profile":"profile","sources":"sources","jobs":"jobs","applications":"applications","chats":"chats"}})).unwrap())?;
-    write_if_missing(&root.join("profile/resume_extracted.md"), "# Resume Extracted\n\nPaste the markdown/plain-text version of your existing resume here.\n")?;
-    write_if_missing(&root.join("profile/user_profile.md"), "# User Profile\n\nAdd stable facts about your background, constraints, and target roles.\n")?;
-    write_if_missing(&root.join("profile/preferences.json"), "{\n  \"locations\": [],\n  \"remote\": true,\n  \"salaryMin\": null,\n  \"visa\": null,\n  \"seniority\": []\n}\n")?;
-    write_if_missing(&root.join("profile/resume_original.pdf"), "")?;
-    write_if_missing(&root.join("sources/apify_sources.json"), "[]\n")?;
-    write_if_missing(&root.join("sources/apify_mcp_config.json"), "{\n  \"mcpServers\": {\n    \"apify\": { \"url\": \"https://mcp.apify.com\" }\n  }\n}\n")?;
-    write_if_missing(&root.join("sources/apify_actor_input.json"), "{\n  \"query\": \"software engineer\",\n  \"maxItems\": 25\n}\n")?;
-    write_if_missing(&root.join("sources/run_apify_actor.md"), "# Run Apify Actor via MCP\n\nUse Apify MCP externally with Codex/opencode. Save output JSON into `sources/imports/`.\n")?;
-    write_if_missing(&root.join("chats/project-chat.md"), "# Project Chat\n\nLocal notes and task drafts. Model execution is not connected yet.\n")?;
+    write_if_missing(&root.join("project.json"), &serde_json::to_string_pretty(&serde_json::json!({"id":project.id,"name":project.name,"slug":project.slug,"schemaVersion":3,"createdAt":created_at,"workspace":"minimal","generatedFolders":"created on demand"})).unwrap())?;
     let mut db=load_db()?; if !db.projects.iter().any(|p| p.slug==project.slug) { db.projects.push(project.clone()); save_db(&db)?; }
     Ok(project)
 }
@@ -266,6 +268,28 @@ fn list_projects() -> Result<Vec<Project>, String> {
 }
 
 #[tauri::command]
+fn delete_project(project_slug: String) -> Result<(), String> {
+    if project_slug.trim().is_empty() { return Err("Project slug is required".into()); }
+    let root = project_root(&project_slug)?;
+    let workspace = workspace_root()?.canonicalize().map_err(|e| e.to_string())?;
+    if root.exists() {
+        let root_canon = root.canonicalize().map_err(|e| e.to_string())?;
+        if root_canon == workspace { return Err("Workspace root cannot be deleted".into()); }
+        if !root_canon.starts_with(&workspace) { return Err("Project path escapes workspace".into()); }
+        fs::remove_dir_all(&root).map_err(|e| e.to_string())?;
+    }
+    let mut db = load_db()?;
+    db.projects.retain(|p| p.slug != project_slug);
+    db.source_configs.retain(|s| s.project_slug != project_slug);
+    db.jobs.retain(|j| j.project_slug != project_slug);
+    save_db(&db)?;
+    let c = conn()?;
+    c.execute("DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE project_slug=?1)", params![project_slug]).map_err(|e| e.to_string())?;
+    c.execute("DELETE FROM chat_sessions WHERE project_slug=?1", params![project_slug]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn open_project(project_slug: String) -> Result<Project, String> {
     let root = project_root(&project_slug)?;
     let db = load_db()?;
@@ -282,10 +306,20 @@ fn open_project(project_slug: String) -> Result<Project, String> {
 #[tauri::command] fn read_text_file(project_slug:String,path:String)->Result<TextFile,String>{ let file=safe_project_path(&project_slug,&path)?; if !is_text_editable(&file){ return Ok(TextFile{content:"".into(),version:"binary".into(),read_only:true}); } let content=fs::read_to_string(&file).map_err(|e|e.to_string())?; let modified=fs::metadata(&file).and_then(|m|m.modified()).ok(); Ok(TextFile{content,version:format!("{:?}",modified),read_only:false}) }
 #[tauri::command] fn write_text_file(input:WriteInput)->Result<(),String>{ let file=safe_project_path(&input.project_slug,&input.path)?; if !is_text_editable(&file){return Err("This file type is read-only in Drop the Grind".into())} let tmp=file.with_extension(format!("{}.tmp",file.extension().and_then(|s|s.to_str()).unwrap_or("dtg"))); fs::write(&tmp,input.content).map_err(|e|e.to_string())?; fs::rename(&tmp,&file).map_err(|e|e.to_string())?; Ok(()) }
 
+fn validate_child_name(name: &str, kind: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.contains('/') || trimmed.contains('\\') { return Err(format!("Invalid {kind} name")); }
+    Ok(trimmed.to_string())
+}
+
+fn child_rel(parent_path: &str, name: &str) -> String {
+    if parent_path.trim().is_empty() { name.to_string() } else { format!("{}/{}", parent_path.trim_end_matches('/'), name) }
+}
+
 #[tauri::command]
 fn create_text_file(input: CreateFileInput) -> Result<String, String> {
-    let name = input.name.trim(); if name.is_empty() || name.contains('/') || name.contains('\\') { return Err("Invalid file name".into()); }
-    let rel = if input.parent_path.trim().is_empty() { name.to_string() } else { format!("{}/{}", input.parent_path.trim_end_matches('/'), name) };
+    let name = validate_child_name(&input.name, "file")?;
+    let rel = child_rel(&input.parent_path, &name);
     let path = safe_project_path(&input.project_slug, &rel)?;
     if path.exists() { return Err("File already exists".into()); }
     if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
@@ -294,9 +328,92 @@ fn create_text_file(input: CreateFileInput) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn create_project_folder(input: CreateFolderInput) -> Result<String, String> {
+    let name = validate_child_name(&input.name, "folder")?;
+    let rel = child_rel(&input.parent_path, &name);
+    let path = safe_project_path(&input.project_slug, &rel)?;
+    if path.exists() { return Err("Folder already exists".into()); }
+    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    Ok(rel)
+}
+
+#[tauri::command]
+fn rename_project_path(input: RenamePathInput) -> Result<String, String> {
+    if input.path.trim().is_empty() { return Err("Project root cannot be renamed".into()); }
+    let new_name = validate_child_name(&input.new_name, "name")?;
+    let path = safe_project_path(&input.project_slug, &input.path)?;
+    if !path.exists() { return Err("Path does not exist".into()); }
+    let parent = path.parent().ok_or("Could not resolve parent folder")?;
+    let target = parent.join(&new_name);
+    if target.exists() { return Err("A file or folder with that name already exists".into()); }
+    let project_root_path = project_root(&input.project_slug)?.canonicalize().map_err(|e| e.to_string())?;
+    let parent_canon = parent.canonicalize().map_err(|e| e.to_string())?;
+    if !parent_canon.starts_with(&project_root_path) { return Err("Path escapes project workspace".into()); }
+    fs::rename(&path, &target).map_err(|e| e.to_string())?;
+    let rel_parent = Path::new(&input.path).parent().and_then(|p| p.to_str()).unwrap_or("");
+    Ok(child_rel(rel_parent, &new_name))
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() { copy_dir_recursive(&src_path, &dst_path)?; } else { fs::copy(&src_path, &dst_path).map_err(|e| e.to_string())?; }
+    }
+    Ok(())
+}
+
+fn copy_name_candidate(name: &str, attempt: usize) -> String {
+    let path = Path::new(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let suffix = if attempt == 1 { " copy".to_string() } else { format!(" copy {attempt}") };
+    if ext.is_empty() { format!("{stem}{suffix}") } else { format!("{stem}{suffix}.{ext}") }
+}
+
+fn copy_project_path_into(project_slug: &str, src_rel: &str, target_parent_rel: &str) -> Result<String, String> {
+    if src_rel.trim().is_empty() { return Err("Project root cannot be copied".into()); }
+    let src = safe_project_path(project_slug, src_rel)?;
+    if !src.exists() { return Err("Path does not exist".into()); }
+    let target_parent = safe_project_path(project_slug, target_parent_rel)?;
+    if !target_parent.exists() || !target_parent.is_dir() { return Err("Paste destination must be a folder".into()); }
+    let src_canon = src.canonicalize().map_err(|e| e.to_string())?;
+    let target_parent_canon = target_parent.canonicalize().map_err(|e| e.to_string())?;
+    if src.is_dir() && target_parent_canon.starts_with(&src_canon) { return Err("A folder cannot be pasted into itself or one of its subfolders".into()); }
+    let name = src.file_name().and_then(|s| s.to_str()).ok_or("Invalid file name")?;
+    let mut target = target_parent.join(name);
+    let mut rel_name = name.to_string();
+    if target.exists() {
+        rel_name = copy_name_candidate(name, 1);
+        target = target_parent.join(&rel_name);
+        for attempt in 2..100 {
+            if !target.exists() { break; }
+            rel_name = copy_name_candidate(name, attempt);
+            target = target_parent.join(&rel_name);
+        }
+    }
+    if target.exists() { return Err("Could not find an available copy name".into()); }
+    if src.is_dir() { copy_dir_recursive(&src, &target)?; } else { fs::copy(&src, &target).map_err(|e| e.to_string())?; }
+    Ok(child_rel(target_parent_rel, &rel_name))
+}
+
+#[tauri::command]
+fn copy_project_path(input: FilePathInput) -> Result<String, String> {
+    let parent = Path::new(&input.path).parent().and_then(|p| p.to_str()).unwrap_or("");
+    copy_project_path_into(&input.project_slug, &input.path, parent)
+}
+
+#[tauri::command]
+fn copy_project_path_to(input: CopyPathToInput) -> Result<String, String> {
+    copy_project_path_into(&input.project_slug, &input.path, &input.target_parent_path)
+}
+
+#[tauri::command]
 fn upload_project_file(input: UploadFileInput) -> Result<String, String> {
-    let name = input.name.trim(); if name.is_empty() || name.contains('/') || name.contains('\\') { return Err("Invalid file name".into()); }
-    let rel = if input.parent_path.trim().is_empty() { name.to_string() } else { format!("{}/{}", input.parent_path.trim_end_matches('/'), name) };
+    let name = validate_child_name(&input.name, "file")?;
+    let rel = child_rel(&input.parent_path, &name);
     let path = safe_project_path(&input.project_slug, &rel)?;
     if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
     fs::write(&path, input.bytes).map_err(|e| e.to_string())?;
@@ -306,11 +423,13 @@ fn upload_project_file(input: UploadFileInput) -> Result<String, String> {
 #[tauri::command]
 fn upload_resume(input: ResumeUploadInput) -> Result<String, String> {
     let ext = Path::new(&input.name).extension().and_then(|s| s.to_str()).unwrap_or("pdf");
+    let profile_dir = project_root(&input.project_slug)?.join("profile");
+    fs::create_dir_all(&profile_dir).map_err(|e| e.to_string())?;
     let rel = format!("profile/resume_current.{}", slugify(ext));
     let path = safe_project_path(&input.project_slug, &rel)?;
     fs::write(&path, &input.bytes).map_err(|e| e.to_string())?;
     if ["md","txt"].contains(&ext.to_lowercase().as_str()) {
-        if let Ok(text) = String::from_utf8(input.bytes) { fs::write(project_root(&input.project_slug)?.join("profile/resume_extracted.md"), text).map_err(|e| e.to_string())?; }
+        if let Ok(text) = String::from_utf8(input.bytes) { fs::write(profile_dir.join("resume_extracted.md"), text).map_err(|e| e.to_string())?; }
     }
     Ok(rel)
 }
@@ -318,22 +437,28 @@ fn upload_resume(input: ResumeUploadInput) -> Result<String, String> {
 #[tauri::command]
 fn remove_resume(project_slug: String) -> Result<(), String> {
     let root = project_root(&project_slug)?.join("profile");
+    if !root.exists() { return Ok(()); }
     for entry in fs::read_dir(root).map_err(|e| e.to_string())? { let path = entry.map_err(|e| e.to_string())?.path(); if path.file_name().and_then(|s|s.to_str()).unwrap_or("").starts_with("resume_current") { let _ = fs::remove_file(path); } }
     Ok(())
 }
 
 #[tauri::command]
 fn delete_project_file(input: FilePathInput) -> Result<(), String> {
+    delete_project_path(input)
+}
+
+#[tauri::command]
+fn delete_project_path(input: FilePathInput) -> Result<(), String> {
+    if input.path.trim().is_empty() { return Err("Project root cannot be deleted".into()); }
     let path = safe_project_path(&input.project_slug, &input.path)?;
-    if path.is_dir() { return Err("Folders cannot be deleted here".into()); }
-    fs::remove_file(path).map_err(|e| e.to_string())
+    if !path.exists() { return Err("Path does not exist".into()); }
+    if path.is_dir() { fs::remove_dir_all(path).map_err(|e| e.to_string()) } else { fs::remove_file(path).map_err(|e| e.to_string()) }
 }
 
 #[tauri::command]
 fn reveal_project_path(input: FilePathInput) -> Result<(), String> {
     let path = safe_project_path(&input.project_slug, &input.path)?;
-    let target = if path.is_dir() { path } else { path.parent().ok_or("Could not reveal file")?.to_path_buf() };
-    Command::new("open").arg(target).spawn().map_err(|e| e.to_string())?;
+    Command::new("open").arg("-R").arg(path).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1373,7 +1498,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,upload_project_file,upload_resume,remove_resume,delete_project_file,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
+pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
 mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} }
