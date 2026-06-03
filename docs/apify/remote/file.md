@@ -1,0 +1,7 @@
+- https://apify.com/memo23/apify-hiring-cafe-scraper (HireCafe)
+- https://apify.com/shahidirfan/weworkremotely-job-scrapper (We Work Remotely)
+- https://apify.com/crawlerbros/four-day-week-jobs-scraper (4 Day Week)
+- https://apify.com/stealth_mode/flexjobs-jobs-search-scraper (FlexJobs)
+- https://apify.com/inlifeprojects/himalayas-jobs-scraper (Himalayas)
+- https://apify.com/kinaesthetic_millionaire/justremote (Just Remote)
+- https://apify.com/santamaria-automations/remotive-scraper (Remotive)

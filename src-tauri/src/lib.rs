@@ -1,189 +1,1379 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::{Path, PathBuf}};
+use rusqlite::{params, Connection};
+use serde_json::Value;
+use std::{collections::{HashMap, hash_map::DefaultHasher}, fs, hash::{Hash, Hasher}, io::{BufRead, BufReader, Write}, path::{Path, PathBuf}, process::{Command, Stdio}, sync::{mpsc, Mutex}, thread, time::Duration};
+use tauri::{ipc::Channel, AppHandle, Emitter, State};
 
 const APP_DIR: &str = ".dropthegrind";
 const WORKSPACE_DIR: &str = "workspace";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct Project {
-    pub id: String,
-    pub name: String,
-    pub slug: String,
-    pub root_path: String,
-    pub created_at: String,
-}
+pub struct Project { pub id: String, pub name: String, pub slug: String, pub root_path: String, pub created_at: String }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FileTreeNode {
-    pub name: String,
-    pub path: String,
-    pub kind: String,
-    pub children: Option<Vec<FileTreeNode>>,
-}
+pub struct FileTreeNode { pub name: String, pub path: String, pub kind: String, pub children: Option<Vec<FileTreeNode>> }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TextFile {
-    pub content: String,
-    pub version: String,
-    pub read_only: bool,
-}
+pub struct TextFile { pub content: String, pub version: String, pub read_only: bool }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WriteInput {
-    pub project_slug: String,
-    pub path: String,
-    pub content: String,
-}
+pub struct WriteInput { pub project_slug: String, pub path: String, pub content: String }
 
-fn workspace_root() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    Ok(home.join(APP_DIR).join(WORKSPACE_DIR))
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateFileInput { pub project_slug: String, pub parent_path: String, pub name: String, pub content: Option<String> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadFileInput { pub project_slug: String, pub parent_path: String, pub name: String, pub bytes: Vec<u8> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeUploadInput { pub project_slug: String, pub name: String, pub bytes: Vec<u8> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePathInput { pub project_slug: String, pub path: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceInput { pub project_slug: String, pub name: String, pub actor_name: String, pub mcp_server_url: Option<String>, pub input_template_json: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportInput { pub project_slug: String, pub path: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobStatusInput { pub project_slug: String, pub job_id: String, pub status: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PacketInput { pub project_slug: String, pub job_id: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveChatInput { pub project_slug: String, pub session_id: Option<String>, pub role: String, pub content: String, pub linked_file_path: Option<String>, pub linked_job_id: Option<String> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRespondInput { pub project_slug: String, pub prompt: String, pub linked_file_path: Option<String> }
+
+#[derive(Default)]
+pub struct AgentRunState { pub pids: Mutex<HashMap<String, u32>> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunInput { pub project_slug: String, pub prompt: String, pub linked_file_path: Option<String>, pub model: Option<String>, pub effort: Option<String>, pub run_id: Option<String> }
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunEvent { pub run_id: String, pub kind: String, pub text: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelAgentRunInput { pub run_id: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListChatInput { pub project_slug: String, pub session_id: Option<String> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateChatSessionInput { pub project_slug: String, pub title: Option<String> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteChatSessionInput { pub project_slug: String, pub session_id: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTaskInput { pub project_slug: String, pub content: String, pub file_name: Option<String> }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage { pub id: String, pub role: String, pub content: String, pub linked_file_path: Option<String>, pub linked_job_id: Option<String>, pub created_at: String }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSession { pub id: String, pub project_slug: String, pub title: String, pub created_at: String, pub updated_at: String }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexStatus { pub installed: bool, pub connected: bool, pub auth_mode: Option<String>, pub version: Option<String>, pub detail: String }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApifyMcpStatus { pub connected: bool, pub detail: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApifyConnectInput { pub token: String }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TavilyStatus { pub connected: bool, pub detail: String, pub masked_key: Option<String> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TavilyConnectInput { pub api_key: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HuntRunInput { pub project_slug: String, pub name: String, pub roles: Vec<String>, pub location: String, pub work_mode: String, pub seniority: String, pub experience: String, pub min_salary: String, pub include_keywords: String, pub exclude_keywords: String, pub posted_within: String, pub selected_sites: Vec<String>, pub max_items: usize }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunHuntApifyInput { #[serde(flatten)] pub hunt: HuntRunInput, pub results_path: String, pub run_id: String }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HuntRunOutput { pub folder_path: String, pub results_path: String }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceConfig { pub id: String, pub project_slug: String, pub name: String, pub actor_name: String, pub mcp_server_url: String, pub input_template_json: String, pub updated_at: String }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct JobRecord { pub id: String, pub title: String, pub company: String, pub location: Option<String>, pub remote_type: String, pub description: Option<String>, pub salary_range: Option<String>, pub apply_url: String, pub source_url: String, pub source_type: String, pub dedupe_key: String, pub status: String, pub created_at: String }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResult { pub imported: usize, pub skipped: usize, pub skipped_reasons: Vec<String> }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationPacket { pub id: String, pub job_id: String, pub relative_path: String, pub status: String, pub created_at: String }
+
+fn app_root() -> Result<PathBuf, String> { Ok(dirs::home_dir().ok_or("Could not determine home directory")?.join(APP_DIR)) }
+fn workspace_root() -> Result<PathBuf, String> { Ok(app_root()?.join(WORKSPACE_DIR)) }
+fn db_path() -> Result<PathBuf, String> { Ok(app_root()?.join("drop-the-grind.sqlite")) }
+fn settings_path() -> Result<PathBuf, String> { Ok(app_root()?.join("settings.json")) }
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Db { projects: Vec<Project>, source_configs: Vec<SourceConfig>, imports: Vec<Value>, jobs: Vec<StoredJob>, packets: Vec<ApplicationPacket> }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StoredJob { project_slug: String, #[serde(flatten)] job: JobRecord }
+
+fn conn() -> Result<Connection, String> {
+    fs::create_dir_all(app_root()?).map_err(|e| e.to_string())?;
+    let c = Connection::open(db_path()?).map_err(|e| e.to_string())?;
+    c.execute_batch("PRAGMA foreign_keys=ON;
+      CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, root_path TEXT NOT NULL, schema_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS source_configs(id TEXT PRIMARY KEY, project_slug TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, actor_name TEXT NOT NULL, mcp_server_url TEXT NOT NULL, input_template_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, project_slug TEXT NOT NULL, raw_file_path TEXT NOT NULL, item_count INTEGER NOT NULL, status TEXT NOT NULL, error_message TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, project_slug TEXT NOT NULL, dedupe_key TEXT NOT NULL, job_json TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_slug, dedupe_key));
+      CREATE TABLE IF NOT EXISTS application_packets(id TEXT PRIMARY KEY, project_slug TEXT NOT NULL, job_id TEXT NOT NULL, packet_json TEXT NOT NULL, relative_path TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_slug, job_id));
+      CREATE TABLE IF NOT EXISTS chat_sessions(id TEXT PRIMARY KEY, project_slug TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS chat_messages(id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, linked_file_path TEXT, linked_job_id TEXT, created_at TEXT NOT NULL);").map_err(|e| e.to_string())?;
+    Ok(c)
 }
+fn load_db() -> Result<Db, String> {
+    let c = conn()?;
+    let mut ps = c.prepare("SELECT id,name,slug,root_path,created_at FROM projects ORDER BY created_at").map_err(|e| e.to_string())?;
+    let projects = ps.query_map([], |r| Ok(Project{id:r.get(0)?,name:r.get(1)?,slug:r.get(2)?,root_path:r.get(3)?,created_at:r.get(4)?})).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    let mut ss = c.prepare("SELECT id,project_slug,name,actor_name,mcp_server_url,input_template_json,updated_at FROM source_configs ORDER BY updated_at DESC").map_err(|e| e.to_string())?;
+    let source_configs = ss.query_map([], |r| Ok(SourceConfig{id:r.get(0)?,project_slug:r.get(1)?,name:r.get(2)?,actor_name:r.get(3)?,mcp_server_url:r.get(4)?,input_template_json:r.get(5)?,updated_at:r.get(6)?})).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    let mut js = c.prepare("SELECT project_slug,job_json FROM jobs ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+    let jobs = js.query_map([], |r| { let project_slug:String=r.get(0)?; let s:String=r.get(1)?; let job:JobRecord=serde_json::from_str(&s).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?; Ok(StoredJob{project_slug,job}) }).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    let mut pts = c.prepare("SELECT packet_json FROM application_packets ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+    let packets = pts.query_map([], |r| { let s:String=r.get(0)?; serde_json::from_str::<ApplicationPacket>(&s).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e))) }).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    Ok(Db{projects,source_configs,imports:vec![],jobs,packets})
+}
+fn save_db(db: &Db) -> Result<(), String> {
+    let mut c = conn()?; let tx = c.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM projects",[]).map_err(|e|e.to_string())?; tx.execute("DELETE FROM source_configs",[]).map_err(|e|e.to_string())?; tx.execute("DELETE FROM jobs",[]).map_err(|e|e.to_string())?; tx.execute("DELETE FROM application_packets",[]).map_err(|e|e.to_string())?;
+    for p in &db.projects { tx.execute("INSERT INTO projects(id,name,slug,root_path,schema_version,created_at,updated_at) VALUES(?1,?2,?3,?4,2,?5,?5)", params![p.id,p.name,p.slug,p.root_path,p.created_at]).map_err(|e|e.to_string())?; }
+    for s in &db.source_configs { tx.execute("INSERT INTO source_configs(id,project_slug,type,name,actor_name,mcp_server_url,input_template_json,created_at,updated_at) VALUES(?1,?2,'apify',?3,?4,?5,?6,?7,?7)", params![s.id,s.project_slug,s.name,s.actor_name,s.mcp_server_url,s.input_template_json,s.updated_at]).map_err(|e|e.to_string())?; }
+    for j in &db.jobs { tx.execute("INSERT OR IGNORE INTO jobs(id,project_slug,dedupe_key,job_json,status,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?6)", params![j.job.id,j.project_slug,j.job.dedupe_key,serde_json::to_string(&j.job).unwrap(),j.job.status,j.job.created_at]).map_err(|e|e.to_string())?; }
+    for p in &db.packets { tx.execute("INSERT OR IGNORE INTO application_packets(id,project_slug,job_id,packet_json,relative_path,status,created_at,updated_at) VALUES(?1,'default',?2,?3,?4,?5,?6,?6)", params![p.id,p.job_id,serde_json::to_string(p).unwrap(),p.relative_path,p.status,p.created_at]).map_err(|e|e.to_string())?; }
+    tx.commit().map_err(|e|e.to_string())
+}
+fn now() -> String { chrono::Utc::now().to_rfc3339() }
 
 fn slugify(input: &str) -> String {
-    let mut out = String::new();
-    let mut last_dash = false;
-    for ch in input.to_lowercase().chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-            last_dash = false;
-        } else if !last_dash {
-            out.push('-');
-            last_dash = true;
-        }
-    }
-    out.trim_matches('-').to_string().chars().take(64).collect::<String>()
+    let mut out = String::new(); let mut last_dash = false;
+    for ch in input.to_lowercase().chars() { if ch.is_ascii_alphanumeric() { out.push(ch); last_dash=false; } else if !last_dash { out.push('-'); last_dash=true; } }
+    out.trim_matches('-').to_string().chars().take(64).collect()
 }
-
+fn short_hash(input: &str) -> String { let mut h=DefaultHasher::new(); input.hash(&mut h); format!("{:x}", h.finish()).chars().take(8).collect() }
 fn ensure_inside_workspace(path: &Path) -> Result<(), String> {
-    let root = workspace_root()?;
-    let root_canon = fs::canonicalize(&root).unwrap_or(root.clone());
-    let candidate = if path.exists() {
-        fs::canonicalize(path).map_err(|e| e.to_string())?
-    } else {
-        let parent = path.parent().ok_or("Path has no parent")?;
-        let parent_canon = fs::canonicalize(parent).map_err(|e| e.to_string())?;
-        parent_canon.join(path.file_name().ok_or("Path has no filename")?)
-    };
+    fs::create_dir_all(workspace_root()?).map_err(|e| e.to_string())?;
+    let root = workspace_root()?; let root_canon = fs::canonicalize(&root).unwrap_or(root.clone());
+    let candidate = if path.exists() { fs::canonicalize(path).map_err(|e| e.to_string())? } else { let parent = path.parent().ok_or("Path has no parent")?; fs::canonicalize(parent).map_err(|e| e.to_string())?.join(path.file_name().ok_or("Path has no filename")?) };
     if candidate.starts_with(&root_canon) { Ok(()) } else { Err("Path escapes Drop the Grind workspace".into()) }
 }
-
-fn project_root(project_slug: &str) -> Result<PathBuf, String> {
-    if project_slug.contains("..") || project_slug.contains('/') || project_slug.contains('\\') {
-        return Err("Invalid project slug".into());
-    }
-    let path = workspace_root()?.join(project_slug);
-    ensure_inside_workspace(&path)?;
-    Ok(path)
-}
-
-fn safe_project_path(project_slug: &str, rel_path: &str) -> Result<PathBuf, String> {
-    if rel_path.contains("..") || Path::new(rel_path).is_absolute() {
-        return Err("Unsafe path".into());
-    }
-    let path = project_root(project_slug)?.join(rel_path);
-    ensure_inside_workspace(&path)?;
-    Ok(path)
-}
-
-fn is_text_editable(path: &Path) -> bool {
-    matches!(path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase().as_str(),
-        "md" | "json" | "txt" | "tex" | "toml" | "yaml" | "yml")
-}
-
-fn write_if_missing(path: &Path, content: &str) -> Result<(), String> {
-    if !path.exists() { fs::write(path, content).map_err(|e| e.to_string())?; }
-    Ok(())
-}
+fn project_root(project_slug: &str) -> Result<PathBuf, String> { if project_slug.contains("..") || project_slug.contains('/') || project_slug.contains('\\') { return Err("Invalid project slug".into()); } let path=workspace_root()?.join(project_slug); ensure_inside_workspace(&path)?; Ok(path) }
+fn safe_project_path(project_slug: &str, rel_path: &str) -> Result<PathBuf, String> { if rel_path.contains("..") || Path::new(rel_path).is_absolute() { return Err("Unsafe path".into()); } let path=project_root(project_slug)?.join(rel_path); ensure_inside_workspace(&path)?; Ok(path) }
+fn is_text_editable(path: &Path) -> bool { matches!(path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase().as_str(), "md"|"json"|"txt"|"tex"|"toml"|"yaml"|"yml") }
+fn write_if_missing(path: &Path, content: &str) -> Result<(), String> { if !path.exists() { fs::write(path, content).map_err(|e| e.to_string())?; } Ok(()) }
 
 #[tauri::command]
-pub fn create_project(name: String) -> Result<Project, String> {
-    let slug = slugify(&name);
-    if slug.is_empty() { return Err("Project name must include letters or numbers".into()); }
-    let root = workspace_root()?.join(&slug);
-    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    ensure_inside_workspace(&root)?;
-
-    for dir in ["profile", "sources/imports", "jobs/normalized", "jobs/ranked", "jobs/approved", "applications", "chats"] {
-        fs::create_dir_all(root.join(dir)).map_err(|e| e.to_string())?;
-    }
-    let created_at = chrono::Utc::now().to_rfc3339();
-    let project = Project { id: uuid::Uuid::new_v4().to_string(), name, slug: slug.clone(), root_path: root.to_string_lossy().to_string(), created_at: created_at.clone() };
-    write_if_missing(&root.join("project.json"), &serde_json::to_string_pretty(&serde_json::json!({"id": project.id, "name": project.name, "slug": project.slug, "schemaVersion": 1, "createdAt": created_at, "folders": {"profile":"profile","sources":"sources","jobs":"jobs","applications":"applications","chats":"chats"}})).unwrap())?;
+fn create_project(name: String) -> Result<Project, String> {
+    let slug=slugify(&name); if slug.is_empty(){return Err("Project name must include letters or numbers".into())}
+    let root=workspace_root()?.join(&slug); fs::create_dir_all(&root).map_err(|e| e.to_string())?; ensure_inside_workspace(&root)?;
+    for dir in ["profile","sources/imports","jobs/normalized","jobs/ranked","jobs/approved","applications","resources","chats"] { fs::create_dir_all(root.join(dir)).map_err(|e| e.to_string())?; }
+    let created_at=now(); let project=Project{id:uuid::Uuid::new_v4().to_string(),name,slug:slug.clone(),root_path:root.to_string_lossy().to_string(),created_at:created_at.clone()};
+    write_if_missing(&root.join("project.json"), &serde_json::to_string_pretty(&serde_json::json!({"id":project.id,"name":project.name,"slug":project.slug,"schemaVersion":2,"createdAt":created_at,"folders":{"profile":"profile","sources":"sources","jobs":"jobs","applications":"applications","chats":"chats"}})).unwrap())?;
     write_if_missing(&root.join("profile/resume_extracted.md"), "# Resume Extracted\n\nPaste the markdown/plain-text version of your existing resume here.\n")?;
     write_if_missing(&root.join("profile/user_profile.md"), "# User Profile\n\nAdd stable facts about your background, constraints, and target roles.\n")?;
     write_if_missing(&root.join("profile/preferences.json"), "{\n  \"locations\": [],\n  \"remote\": true,\n  \"salaryMin\": null,\n  \"visa\": null,\n  \"seniority\": []\n}\n")?;
     write_if_missing(&root.join("profile/resume_original.pdf"), "")?;
     write_if_missing(&root.join("sources/apify_sources.json"), "[]\n")?;
-    write_if_missing(&root.join("sources/apify_mcp_config.json"), "{\n  \"mcpServers\": {\n    \"apify\": {\n      \"url\": \"https://mcp.apify.com\"\n    }\n  }\n}\n")?;
+    write_if_missing(&root.join("sources/apify_mcp_config.json"), "{\n  \"mcpServers\": {\n    \"apify\": { \"url\": \"https://mcp.apify.com\" }\n  }\n}\n")?;
+    write_if_missing(&root.join("sources/apify_actor_input.json"), "{\n  \"query\": \"software engineer\",\n  \"maxItems\": 25\n}\n")?;
     write_if_missing(&root.join("sources/run_apify_actor.md"), "# Run Apify Actor via MCP\n\nUse Apify MCP externally with Codex/opencode. Save output JSON into `sources/imports/`.\n")?;
     write_if_missing(&root.join("chats/project-chat.md"), "# Project Chat\n\nLocal notes and task drafts. Model execution is not connected yet.\n")?;
+    let mut db=load_db()?; if !db.projects.iter().any(|p| p.slug==project.slug) { db.projects.push(project.clone()); save_db(&db)?; }
     Ok(project)
 }
 
-fn build_tree(root: &Path, current: &Path) -> Result<FileTreeNode, String> {
-    let rel = current.strip_prefix(root).unwrap_or(current).to_string_lossy().to_string();
-    let name = current.file_name().and_then(|s| s.to_str()).unwrap_or(".").to_string();
-    if current.is_dir() {
-        let mut children = vec![];
-        for entry in fs::read_dir(current).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            children.push(build_tree(root, &entry.path())?);
+fn build_tree(root:&Path,current:&Path)->Result<FileTreeNode,String>{ let rel=current.strip_prefix(root).unwrap_or(current).to_string_lossy().to_string(); let name=current.file_name().and_then(|s|s.to_str()).unwrap_or(".").to_string(); if current.is_dir(){ let mut children=vec![]; for entry in fs::read_dir(current).map_err(|e|e.to_string())?{ let entry=entry.map_err(|e|e.to_string())?; children.push(build_tree(root,&entry.path())?); } children.sort_by(|a,b|a.kind.cmp(&b.kind).then(a.name.cmp(&b.name))); Ok(FileTreeNode{name,path:rel,kind:"directory".into(),children:Some(children)}) } else { Ok(FileTreeNode{name,path:rel,kind:"file".into(),children:None}) } }
+#[tauri::command]
+fn list_projects() -> Result<Vec<Project>, String> {
+    let mut projects = load_db()?.projects;
+    if projects.is_empty() {
+        let root = workspace_root()?;
+        if root.exists() {
+            for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
+                let path = entry.map_err(|e| e.to_string())?.path();
+                let manifest = path.join("project.json");
+                if manifest.exists() {
+                    if let Ok(v) = serde_json::from_str::<Value>(&fs::read_to_string(&manifest).map_err(|e| e.to_string())?) {
+                        let slug = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                        projects.push(Project {
+                            id: string_alias(&v, &["id"]).unwrap_or_else(|| slug.clone()),
+                            name: string_alias(&v, &["name"]).unwrap_or_else(|| slug.clone()),
+                            slug,
+                            root_path: path.to_string_lossy().to_string(),
+                            created_at: string_alias(&v, &["createdAt", "created_at"]).unwrap_or_else(now),
+                        });
+                    }
+                }
+            }
         }
-        children.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.name.cmp(&b.name)));
-        Ok(FileTreeNode { name, path: rel, kind: "directory".into(), children: Some(children) })
-    } else {
-        Ok(FileTreeNode { name, path: rel, kind: "file".into(), children: None })
     }
+    projects.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(projects)
 }
 
 #[tauri::command]
-pub fn list_workspace_tree(project_slug: String) -> Result<FileTreeNode, String> {
+fn open_project(project_slug: String) -> Result<Project, String> {
     let root = project_root(&project_slug)?;
-    build_tree(&root, &root)
-}
-
-#[tauri::command]
-pub fn read_text_file(project_slug: String, path: String) -> Result<TextFile, String> {
-    let file = safe_project_path(&project_slug, &path)?;
-    if !is_text_editable(&file) {
-        return Ok(TextFile { content: "".into(), version: "binary".into(), read_only: true });
+    let db = load_db()?;
+    if let Some(p) = db.projects.into_iter().find(|p| p.slug == project_slug) { return Ok(p); }
+    let manifest = root.join("project.json");
+    if manifest.exists() {
+        let v: Value = serde_json::from_str(&fs::read_to_string(manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        return Ok(Project { id: string_alias(&v, &["id"]).unwrap_or_else(|| project_slug.clone()), name: string_alias(&v, &["name"]).unwrap_or_else(|| project_slug.clone()), slug: project_slug, root_path: root.to_string_lossy().to_string(), created_at: string_alias(&v, &["createdAt", "created_at"]).unwrap_or_else(now) });
     }
-    let content = fs::read_to_string(&file).map_err(|e| e.to_string())?;
-    let modified = fs::metadata(&file).and_then(|m| m.modified()).ok();
-    Ok(TextFile { content, version: format!("{:?}", modified), read_only: false })
+    Err("Project not found".into())
+}
+
+#[tauri::command] fn list_workspace_tree(project_slug:String)->Result<FileTreeNode,String>{ let root=project_root(&project_slug)?; build_tree(&root,&root) }
+#[tauri::command] fn read_text_file(project_slug:String,path:String)->Result<TextFile,String>{ let file=safe_project_path(&project_slug,&path)?; if !is_text_editable(&file){ return Ok(TextFile{content:"".into(),version:"binary".into(),read_only:true}); } let content=fs::read_to_string(&file).map_err(|e|e.to_string())?; let modified=fs::metadata(&file).and_then(|m|m.modified()).ok(); Ok(TextFile{content,version:format!("{:?}",modified),read_only:false}) }
+#[tauri::command] fn write_text_file(input:WriteInput)->Result<(),String>{ let file=safe_project_path(&input.project_slug,&input.path)?; if !is_text_editable(&file){return Err("This file type is read-only in Drop the Grind".into())} let tmp=file.with_extension(format!("{}.tmp",file.extension().and_then(|s|s.to_str()).unwrap_or("dtg"))); fs::write(&tmp,input.content).map_err(|e|e.to_string())?; fs::rename(&tmp,&file).map_err(|e|e.to_string())?; Ok(()) }
+
+#[tauri::command]
+fn create_text_file(input: CreateFileInput) -> Result<String, String> {
+    let name = input.name.trim(); if name.is_empty() || name.contains('/') || name.contains('\\') { return Err("Invalid file name".into()); }
+    let rel = if input.parent_path.trim().is_empty() { name.to_string() } else { format!("{}/{}", input.parent_path.trim_end_matches('/'), name) };
+    let path = safe_project_path(&input.project_slug, &rel)?;
+    if path.exists() { return Err("File already exists".into()); }
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    fs::write(&path, input.content.unwrap_or_default()).map_err(|e| e.to_string())?;
+    Ok(rel)
 }
 
 #[tauri::command]
-pub fn write_text_file(input: WriteInput) -> Result<(), String> {
-    let file = safe_project_path(&input.project_slug, &input.path)?;
-    if !is_text_editable(&file) { return Err("This file type is read-only in Drop the Grind".into()); }
-    let tmp = file.with_extension(format!("{}.tmp", file.extension().and_then(|s| s.to_str()).unwrap_or("dtg")));
-    fs::write(&tmp, input.content).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &file).map_err(|e| e.to_string())?;
+fn upload_project_file(input: UploadFileInput) -> Result<String, String> {
+    let name = input.name.trim(); if name.is_empty() || name.contains('/') || name.contains('\\') { return Err("Invalid file name".into()); }
+    let rel = if input.parent_path.trim().is_empty() { name.to_string() } else { format!("{}/{}", input.parent_path.trim_end_matches('/'), name) };
+    let path = safe_project_path(&input.project_slug, &rel)?;
+    if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+    fs::write(&path, input.bytes).map_err(|e| e.to_string())?;
+    Ok(rel)
+}
+
+#[tauri::command]
+fn upload_resume(input: ResumeUploadInput) -> Result<String, String> {
+    let ext = Path::new(&input.name).extension().and_then(|s| s.to_str()).unwrap_or("pdf");
+    let rel = format!("profile/resume_current.{}", slugify(ext));
+    let path = safe_project_path(&input.project_slug, &rel)?;
+    fs::write(&path, &input.bytes).map_err(|e| e.to_string())?;
+    if ["md","txt"].contains(&ext.to_lowercase().as_str()) {
+        if let Ok(text) = String::from_utf8(input.bytes) { fs::write(project_root(&input.project_slug)?.join("profile/resume_extracted.md"), text).map_err(|e| e.to_string())?; }
+    }
+    Ok(rel)
+}
+
+#[tauri::command]
+fn remove_resume(project_slug: String) -> Result<(), String> {
+    let root = project_root(&project_slug)?.join("profile");
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? { let path = entry.map_err(|e| e.to_string())?.path(); if path.file_name().and_then(|s|s.to_str()).unwrap_or("").starts_with("resume_current") { let _ = fs::remove_file(path); } }
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_project_file(input: FilePathInput) -> Result<(), String> {
+    let path = safe_project_path(&input.project_slug, &input.path)?;
+    if path.is_dir() { return Err("Folders cannot be deleted here".into()); }
+    fs::remove_file(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reveal_project_path(input: FilePathInput) -> Result<(), String> {
+    let path = safe_project_path(&input.project_slug, &input.path)?;
+    let target = if path.is_dir() { path } else { path.parent().ok_or("Could not reveal file")?.to_path_buf() };
+    Command::new("open").arg(target).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn save_source_config(input: SourceInput) -> Result<SourceConfig, String> {
+    if input.actor_name.trim().is_empty() { return Err("Actor name is required".into()); }
+    serde_json::from_str::<Value>(&input.input_template_json).map_err(|e| format!("Input JSON is invalid: {e}"))?;
+    let url=input.mcp_server_url.unwrap_or_else(||"https://mcp.apify.com".into()); let updated_at=now();
+    let cfg=SourceConfig{id:short_hash(&format!("{}:{}",input.project_slug,input.actor_name)),project_slug:input.project_slug.clone(),name:input.name,actor_name:input.actor_name,mcp_server_url:url,input_template_json:input.input_template_json,updated_at};
+    let mut db=load_db()?; db.source_configs.retain(|c| !(c.project_slug==cfg.project_slug && c.id==cfg.id)); db.source_configs.push(cfg.clone()); save_db(&db)?; Ok(cfg)
+}
+#[tauri::command]
+fn get_source_config(project_slug:String)->Result<Option<SourceConfig>,String>{ Ok(load_db()?.source_configs.into_iter().find(|c| c.project_slug==project_slug)) }
+#[tauri::command]
+fn generate_apify_files(input: SourceInput)->Result<(),String>{ let cfg=save_source_config(input)?; let root=project_root(&cfg.project_slug)?; fs::write(root.join("sources/apify_mcp_config.json"), serde_json::to_string_pretty(&serde_json::json!({"mcpServers":{"apify":{"url":cfg.mcp_server_url}}})).unwrap()).map_err(|e|e.to_string())?; fs::write(root.join("sources/apify_actor_input.json"), cfg.input_template_json).map_err(|e|e.to_string())?; fs::write(root.join("sources/run_apify_actor.md"), format!("# Run Apify Actor via MCP\n\nUse the Apify MCP server to run actor `{}` with the input in `sources/apify_actor_input.json`.\n\nSave the returned dataset items as JSON to `sources/imports/<timestamp>-raw.json`.\n\nDo not tailor resumes or apply to jobs. Only collect job listing data.\n", cfg.actor_name)).map_err(|e|e.to_string())?; Ok(()) }
+
+fn actor_slug_for_site(site: &str) -> &'static str {
+    match site {
+        "54 Career Sites" => "fantastic-jobs/career-site-job-listing-api",
+        "Indeed" => "misceres/indeed-scraper",
+        "LinkedIn" => "fantastic-jobs/advanced-linkedin-job-search-api",
+        "Wellfound" => "crawlerbros/wellfound-scraper",
+        "YC Startup Jobs" => "memo23/y-combinator-scraper",
+        "Welcome to the Jungle" => "shahidirfan/jungle-job-scraper",
+        "HiringCafe" => "memo23/apify-hiring-cafe-scraper",
+        "We Work Remotely" => "shahidirfan/weworkremotely-job-scrapper",
+        "4 Day Week" => "crawlerbros/four-day-week-jobs-scraper",
+        "FlexJobs" => "stealth_mode/flexjobs-jobs-search-scraper",
+        "Himalayas" => "inlifeprojects/himalayas-jobs-scraper",
+        "JustRemote" => "kinaesthetic_millionaire/justremote",
+        "Remotive" => "santamaria-automations/remotive-scraper",
+        _ => "unknown",
+    }
+}
+
+#[tauri::command]
+fn create_hunt_run(input: HuntRunInput) -> Result<HuntRunOutput, String> {
+    let root = project_root(&input.project_slug)?;
+    let slug = slugify(&input.name);
+    if slug.is_empty() { return Err("Hunt name must include letters or numbers".into()); }
+    fs::create_dir_all(root.join("hunt_run")).map_err(|e| e.to_string())?;
+    let rel_folder = format!("hunt_run/{slug}");
+    let folder = safe_project_path(&input.project_slug, &rel_folder)?;
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let created = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let roles_md = input.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("\n");
+    let actor_lines = input.selected_sites.iter().map(|s| format!("- {} → `{}`", s, actor_slug_for_site(s))).collect::<Vec<_>>().join("\n");
+    let results = format!("# Hunt Results\n\nRun: {}\nCreated: {}\nGenerated: pending\n\n## Hunt Settings\n\n- Mode: {}\n- Max scrape results: {}\n- Location: {}\n- Posted within: {}\n- Seniority: {}\n- Experience: {}\n- Minimum salary: {}\n- Include keywords: {}\n- Avoid keywords: {}\n\n### Roles\n\n{}\n\n### Apify Actors\n\n{}\n\n## Status\n\nThis hunt run has been created. Drop the Grind will use the direct Apify Actor API to write a summary/index here and one focused Markdown file per job under `jobs/`.\n\n## Summary\n\n- Raw jobs found: pending\n- Jobs included: pending\n- Sources failed: pending\n\n## Jobs\n\nJob links will appear here when the run completes.\n\n", input.name, created, input.work_mode, input.max_items, input.location, input.posted_within, input.seniority, input.experience, input.min_salary, input.include_keywords, input.exclude_keywords, if roles_md.is_empty(){"- Not specified"}else{&roles_md}, if actor_lines.is_empty(){"- None"}else{&actor_lines});
+    fs::write(folder.join("results.md"), results).map_err(|e| e.to_string())?;
+    Ok(HuntRunOutput{folder_path: rel_folder.clone(), results_path: format!("{rel_folder}/results.md")})
+}
+
+
+fn emit_event(ch: &Channel<AgentRunEvent>, run_id: &str, kind: &str, text: impl Into<String>) {
+    let _ = ch.send(AgentRunEvent{run_id: run_id.to_string(), kind: kind.to_string(), text: text.into()});
+}
+
+fn actor_api_slug(slug: &str) -> String { slug.replace('/', "~") }
+fn hunt_roles_query(h: &HuntRunInput) -> String {
+    let roles = h.roles.iter().map(|r| r.trim()).filter(|r| !r.is_empty()).collect::<Vec<_>>().join(" OR ");
+    if !roles.is_empty() { roles } else if !h.include_keywords.trim().is_empty() { h.include_keywords.trim().to_string() } else { "software engineer".into() }
+}
+fn csv_words(s: &str) -> Vec<Value> { s.split(',').map(|x| x.trim()).filter(|x| !x.is_empty()).map(|x| Value::String(x.to_string())).collect() }
+fn location_terms(h: &HuntRunInput) -> Vec<Value> { csv_words(&h.location).into_iter().filter(|v| v.as_str() != Some("Worldwide")).collect() }
+fn country_code(location: &str) -> String {
+    let l = location.to_lowercase();
+    if l.contains("united kingdom") || l.contains("uk") { "GB".into() }
+    else if l.contains("new zealand") { "NZ".into() }
+    else if l.contains("australia") { "AU".into() }
+    else if l.contains("canada") { "CA".into() }
+    else if l.contains("india") { "IN".into() }
+    else if l.contains("singapore") { "SG".into() }
+    else if l.contains("germany") { "DE".into() }
+    else if l.contains("france") { "FR".into() }
+    else if l.contains("netherlands") { "NL".into() }
+    else if l.contains("united states") || l.contains("usa") { "US".into() }
+    else { "US".into() }
+}
+fn posted_time_range(h: &HuntRunInput) -> &'static str { match h.posted_within.as_str() { "1 week" => "7d", "3 weeks" | "1 month" => "30d", _ => "6m" } }
+fn fantastic_time_range(h: &HuntRunInput) -> &'static str { if h.posted_within == "1 week" { "7d" } else { "6m" } }
+fn min_salary_num(h: &HuntRunInput) -> i64 { h.min_salary.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<i64>().unwrap_or(0) * 1000 }
+fn seniority_array(h: &HuntRunInput) -> Vec<Value> {
+    let s = h.seniority.to_lowercase();
+    let label = if s.contains("entry") { "Entry-level" } else if s.contains("mid") || s.contains("associate") { "Mid-level" } else if s.contains("senior") { "Senior" } else { "Senior" };
+    vec![Value::String(label.into())]
+}
+
+fn build_actor_input(site: &str, h: &HuntRunInput) -> Value {
+    let query = hunt_roles_query(h);
+    let include = csv_words(&h.include_keywords);
+    let exclude = csv_words(&h.exclude_keywords);
+    let locs = location_terms(h);
+    let max = h.max_items.max(10);
+    match site {
+        "54 Career Sites" => serde_json::json!({
+            "timeRange": fantastic_time_range(h), "limit": max, "includeAi": true,
+            "titleSearch": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(),
+            "titleExclusionSearch": exclude, "descriptionExclusionSearch": csv_words(&h.exclude_keywords),
+            "locationSearch": locs, "descriptionSearch": include,
+            "descriptionType": "text"
+        }),
+        "LinkedIn" => serde_json::json!({
+            "timeRange": fantastic_time_range(h), "limit": max, "includeAi": true,
+            "titleSearch": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(),
+            "titleExclusionSearch": exclude, "descriptionExclusionSearch": csv_words(&h.exclude_keywords),
+            "locationSearch": locs, "descriptionSearch": include,
+            "descriptionType": "text", "remote": h.work_mode == "Remote"
+        }),
+        "Indeed" => serde_json::json!({"position": query, "country": country_code(&h.location), "location": h.location, "maxItemsPerSearch": h.max_items, "saveOnlyUniqueItems": true}),
+        "Wellfound" => serde_json::json!({"jobTitle": query, "keyword": h.include_keywords, "location": h.location, "remoteOnly": h.work_mode == "Remote", "experience": if h.seniority.to_lowercase().contains("senior") {"senior"} else {"any"}, "minSalary": min_salary_num(h), "includeNoSalary": true, "sort": "newest", "maxItems": h.max_items}),
+        "YC Startup Jobs" => serde_json::json!({"mode":"jobs", "queries":[query], "location": if h.work_mode == "Remote" {"remote"} else {""}, "scrapeOpenJobs": true, "maxItems": h.max_items}),
+        "Welcome to the Jungle" => serde_json::json!({"keyword": query, "location": h.location, "posted_within": posted_time_range(h), "results_wanted": h.max_items, "max_pages": 5}),
+        "HiringCafe" => serde_json::json!({"keyword": query, "location": h.location, "workplaceType": if h.work_mode == "Remote" {"Remote"} else {"Any"}, "maxItems": h.max_items, "flattenOutput": true, "enrichDescription": true}),
+        "We Work Remotely" => serde_json::json!({"category":"all", "results_wanted": h.max_items}),
+        "4 Day Week" => serde_json::json!({"mode":"search", "query": query, "category":"", "jobType":"", "maxItems": h.max_items}),
+        "FlexJobs" => serde_json::json!({"urls":[format!("https://www.flexjobs.com/search?search={}", query.replace(' ', "+"))], "ignore_url_failures": true, "max_items_per_url": h.max_items}),
+        "Himalayas" => serde_json::json!({"keywords": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(), "seniority": seniority_array(h), "employmentType":"Full Time", "worldwide": h.location.contains("Worldwide"), "country": if h.location.contains("Worldwide") {""} else {h.location.as_str()}, "sortBy":"recent", "maxResultsPerKeyword": h.max_items, "filterNonTech": false}),
+        "JustRemote" => serde_json::json!({"inputUrls":[format!("https://justremote.co/remote-jobs/search?search={}", query.replace(' ', "%20"))], "scrapeCompanyInfo": false, "maxResults": h.max_items, "enableCache": true}),
+        "Remotive" => serde_json::json!({"searchQueries":[query], "includeCompanyInfo": true, "maxResultsPerQuery": h.max_items, "maxResults": h.max_items}),
+        _ => serde_json::json!({"query": query, "maxItems": h.max_items})
+    }
+}
+
+fn curl_json(method: &str, url: &str, token: &str, body: Option<&Value>) -> Result<Value, String> {
+    let mut cmd = Command::new("curl");
+    cmd.args(["-sS", "-X", method, "-H", &format!("Authorization: Bearer {token}"), "-H", "Content-Type: application/json", url]);
+    if let Some(b) = body { cmd.arg("--data").arg(serde_json::to_string(b).map_err(|e| e.to_string())?); }
+    let out = cmd.output().map_err(|e| format!("Could not run curl: {e}"))?;
+    if !out.status.success() { return Err(String::from_utf8_lossy(&out.stderr).trim().to_string()); }
+    let text = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str(&text).map_err(|e| format!("Apify returned invalid JSON: {e}; {text}"))
+}
+
+fn run_actor_api(site: &str, actor_slug: &str, h: &HuntRunInput, token: &str, run_id: &str, ch: &Channel<AgentRunEvent>) -> Result<Vec<Value>, String> {
+    let input = build_actor_input(site, h);
+    emit_event(ch, run_id, "status", format!("Starting {site} actor"));
+    let url = format!("https://api.apify.com/v2/acts/{}/runs", actor_api_slug(actor_slug));
+    let started = curl_json("POST", &url, token, Some(&input))?;
+    let apify_run_id = started["data"]["id"].as_str().ok_or("Apify did not return a run id")?.to_string();
+    emit_event(ch, run_id, "status", format!("{site}: actor run started ({apify_run_id})"));
+    let mut dataset_id = started["data"]["defaultDatasetId"].as_str().map(|s| s.to_string());
+    for _ in 0..180 {
+        thread::sleep(Duration::from_secs(2));
+        let poll = curl_json("GET", &format!("https://api.apify.com/v2/actor-runs/{apify_run_id}"), token, None)?;
+        let status = poll["data"]["status"].as_str().unwrap_or("UNKNOWN");
+        emit_event(ch, run_id, "status", format!("{site}: {status}"));
+        if dataset_id.is_none() { dataset_id = poll["data"]["defaultDatasetId"].as_str().map(|s| s.to_string()); }
+        match status {
+            "SUCCEEDED" => break,
+            "FAILED" | "ABORTED" | "TIMED-OUT" => return Err(format!("{site} actor {status}")),
+            _ => {}
+        }
+    }
+    let dataset_id = dataset_id.ok_or(format!("{site} run did not expose a dataset id"))?;
+    emit_event(ch, run_id, "status", format!("{site}: reading dataset items"));
+    let items = curl_json("GET", &format!("https://api.apify.com/v2/datasets/{dataset_id}/items?clean=true&format=json&limit={}", h.max_items), token, None)?;
+    Ok(items.as_array().cloned().unwrap_or_default())
+}
+
+fn job_detail_markdown(idx: usize, j: &HuntJob) -> String {
+    let reqs = if j.requirements.is_empty() { String::new() } else {
+        format!("\n## Requirements\n\n{}\n", j.requirements.join("; "))
+    };
+    let skills = if j.skills.is_empty() { String::new() } else {
+        format!("\n## Key skills\n\n{}\n", j.skills.iter().map(|s| format!("- {s}")).collect::<Vec<_>>().join("\n"))
+    };
+    let wm = if j.work_mode.is_empty() { String::new() } else { format!("\n- Work mode: {}", j.work_mode) };
+    let sr = if j.seniority.is_empty() { String::new() } else { format!("\n- Seniority: {}", j.seniority) };
+    let ex = if j.experience.is_empty() { String::new() } else { format!("\n- Experience: {}", j.experience) };
+    let desc = if j.description.is_empty() { String::new() } else { format!("\n## Description\n\n{}\n", j.description) };
+    format!("# {idx}. {title} — {company}\n\n## Job Metadata\n\n- Source: {src}\n- Company: {company}\n- Location: {loc}\n- Salary: {sal}\n- Posted: {pt}\n- Apply: {ap}\n- Original URL: {ourl}{wm}{sr}{ex}{reqs}{skills}{desc}\n## Resume / Outreach Notes\n\nUse this file as the focused job context when tailoring a resume, cover letter, or outreach message. Do not load the whole hunt unless comparing jobs.\n",
+        title = j.title, company = j.company, src = j.source_name,
+        loc = j.location, sal = j.salary, pt = j.posted_date,
+        ap = j.apply_url, ourl = j.source_url)
+}
+
+fn job_index_markdown(idx: usize, rel_path: &str, j: &HuntJob) -> String {
+    let mut meta = vec![];
+    if !j.location.is_empty() { meta.push(format!("Location: {}", j.location)); }
+    if !j.work_mode.is_empty() { meta.push(format!("Work mode: {}", j.work_mode)); }
+    if !j.salary.is_empty() { meta.push(format!("Salary: {}", j.salary)); }
+    if !j.posted_date.is_empty() { meta.push(format!("Posted: {}", j.posted_date)); }
+    format!("{}. [{} — {}]({})\n   - Source: {}{}\n", idx, j.title, j.company, rel_path, j.source_name, if meta.is_empty(){String::new()}else{format!("\n   - {}", meta.join(" · "))})
+}
+
+fn job_file_name(idx: usize, j: &HuntJob) -> String {
+    let title = slugify(&j.title).chars().take(42).collect::<String>();
+    let company = slugify(&j.company).chars().take(28).collect::<String>();
+    format!("{:03}-{}-{}.md", idx, if title.is_empty(){"job"}else{&title}, if company.is_empty(){"company"}else{&company})
+}
+
+#[tauri::command]
+fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
+    let run_id = input.run_id.clone();
+    let return_run_id = run_id.clone();
+    let token = read_apify_key()?.ok_or("Connect Apify API in Settings first")?;
+    thread::spawn(move || {
+        emit_event(&on_event, &run_id, "started", "Starting Apify Actor API hunt");
+        let results_path = match safe_project_path(&input.hunt.project_slug, &input.results_path) { Ok(p) => p, Err(e) => { emit_event(&on_event, &run_id, "failed", e); return; } };
+        let mut all = Vec::<(String, Value)>::new();
+        let mut failures = Vec::<String>::new();
+        for site in &input.hunt.selected_sites {
+            let actor = actor_slug_for_site(site);
+            if actor == "unknown" { failures.push(format!("{site}: unknown actor")); continue; }
+            match run_actor_api(site, actor, &input.hunt, &token, &run_id, &on_event) {
+                Ok(items) => { emit_event(&on_event, &run_id, "status", format!("{site}: fetched {} items", items.len())); for item in items { all.push((site.clone(), item)); } }
+                Err(e) => { emit_event(&on_event, &run_id, "status", format!("{site} failed: {e}")); failures.push(format!("{site}: {e}")); }
+            }
+        }
+        let raw_found = all.len();
+        let mut seen = std::collections::HashSet::new();
+        let mut jobs = Vec::new();
+        let mut filtered = 0usize;
+        let mut duplicate = 0usize;
+        for (source, item) in all {
+            let norm = normalize_hunt_job(&source, &item);
+            if post_filter_reason(&input.hunt, &norm).is_some() { filtered += 1; continue; }
+            let key = format!("{}:{}:{}", norm.title.to_lowercase(), norm.company.to_lowercase(), norm.apply_url.to_lowercase());
+            if seen.insert(key) { jobs.push((source, norm)); } else { duplicate += 1; }
+            if jobs.len() >= input.hunt.max_items { break; }
+        }
+        emit_event(&on_event, &run_id, "status", format!("Filtered {filtered} jobs and removed {duplicate} duplicates"));
+        let generated = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+        let jobs_dir = match results_path.parent() { Some(parent) => parent.join("jobs"), None => { emit_event(&on_event, &run_id, "failed", "Could not resolve hunt jobs directory"); return; } };
+        if jobs_dir.exists() { let _ = fs::remove_dir_all(&jobs_dir); }
+        if let Err(e) = fs::create_dir_all(&jobs_dir) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
+        let mut job_links = Vec::<(String, HuntJob)>::new();
+        for (i, (_, norm)) in jobs.iter().enumerate() {
+            let file_name = job_file_name(i+1, norm);
+            let detail_path = jobs_dir.join(&file_name);
+            if let Err(e) = fs::write(&detail_path, job_detail_markdown(i+1, norm)) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
+            job_links.push((format!("jobs/{file_name}"), norm.clone()));
+        }
+        let roles_md = input.hunt.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("\n");
+        let mut md = format!("# Hunt Results\n\nRun: {}\nMode: {}\nSources: {}\nGenerated: {}\n\n## Hunt Settings\n\n- Max scrape results: {}\n- Location: {}\n- Posted within: {}\n- Seniority: {}\n- Experience: {}\n- Minimum salary: {}\n- Include keywords: {}\n- Avoid keywords: {}\n\n### Roles\n\n{}\n\n## Summary\n\n- Raw jobs found: {}\n- Jobs included: {}\n- Jobs filtered out: {}\n- Duplicates removed: {}\n- Sources failed: {}\n\n", input.hunt.name, input.hunt.work_mode, input.hunt.selected_sites.join(", "), generated, input.hunt.max_items, input.hunt.location, input.hunt.posted_within, input.hunt.seniority, input.hunt.experience, input.hunt.min_salary, input.hunt.include_keywords, input.hunt.exclude_keywords, if roles_md.is_empty(){"- Not specified"}else{&roles_md}, raw_found, jobs.len(), filtered, duplicate, failures.len());
+        if !failures.is_empty() { md.push_str("## Source Failures\n\n"); for f in &failures { md.push_str(&format!("- {f}\n")); } md.push('\n'); }
+        md.push_str("## Jobs\n\nOpen an individual job file when tailoring a resume or writing outreach. Do not load every job into the agent at once.\n\n");
+        for (i, (rel, norm)) in job_links.iter().enumerate() { md.push_str(&job_index_markdown(i+1, rel, norm)); }
+        if let Err(e) = fs::write(&results_path, md) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
+        emit_event(&on_event, &run_id, "completed", format!("Hunt complete. Wrote {} jobs to results.md", jobs.len()));
+    });
+    Ok(return_run_id)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HuntJob {
+    pub title: String, pub company: String, pub location: String,
+    pub work_mode: String, pub seniority: String, pub experience: String,
+    pub salary: String, pub posted_date: String,
+    pub apply_url: String, pub source_url: String,
+    pub source_name: String, pub actor_slug: String,
+    pub description: String,
+    pub requirements: Vec<String>, pub skills: Vec<String>,
+}
+
+fn alias(v: &Value, keys: &[&str]) -> String {
+    for k in keys {
+        if let Some(val) = v.get(*k) {
+            if let Some(s) = val.as_str() { let t = s.trim(); if !t.is_empty() { return t.to_string(); } }
+            else if let Some(n) = val.as_i64() { return n.to_string(); }
+            else if let Some(n) = val.as_f64() { return format!("{:.0}", n); }
+            else if let Some(b) = val.as_bool() { return if b { "Yes".into() } else { "No".into() }; }
+            else if let Some(arr) = val.as_array() {
+                let joined = arr.iter().filter_map(|x| {
+                    if let Some(s)=x.as_str(){Some(s.trim().to_string())}
+                    else if x.is_number() || x.is_boolean(){Some(x.to_string())}
+                    else {None}
+                }).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
+                if !joined.is_empty() { return joined; }
+            }
+        }
+    }
+    String::new()
+}
+fn alias_alt(v: &Value, primary: &[&str], fallback: &[&str]) -> String {
+    let r = alias(v, primary);
+    if !r.is_empty() { return r; }
+    alias(v, fallback)
+}
+fn alias_bool(v: &Value, key: &str, default: bool) -> bool {
+    v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
+}
+fn listify(v: &Value, keys: &[&str]) -> Vec<String> {
+    for k in keys {
+        if let Some(val) = v.get(*k) {
+            if let Some(arr) = val.as_array() {
+                let items: Vec<String> = arr.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                if !items.is_empty() { return items; }
+            }
+            if let Some(s) = val.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() { return vec![trimmed.to_string()]; }
+            }
+        }
+    }
+    vec![]
+}
+fn concise(text: String, max_chars: usize) -> String {
+    let cleaned = text.replace("\r", " ").replace("\t", " ").lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+    if cleaned.chars().count() <= max_chars { cleaned } else { format!("{}…", cleaned.chars().take(max_chars).collect::<String>()) }
+}
+
+fn normalize_54_career_sites(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title"]), company: alias(v, &["organization"]),
+        location: alias_alt(v, &["locations_raw"], &["locations_derived","cities_derived","countries_derived"]),
+        work_mode: alias(v, &["ai_work_arrangement","remote_derived"]),
+        seniority: alias(v, &["ai_experience_level"]),
+        experience: String::new(),
+        salary: alias_alt(v, &["ai_salary_minvalue"], &["ai_salary_maxvalue","ai_salary_currency","ai_salary_unittext","salary_raw"]),
+        posted_date: alias(v, &["date_posted","date_created"]),
+        apply_url: alias(v, &["external_apply_url","url"]),
+        source_url: alias(v, &["url","external_apply_url"]),
+        source_name: "54 Career Sites".into(), actor_slug: "fantastic-jobs/career-site-job-listing-api".into(),
+        description: concise(alias(v, &["description_text"]), 1800),
+        requirements: listify(v, &["ai_requirements_summary"]),
+        skills: listify(v, &["ai_key_skills"]),
+    }
+}
+fn normalize_linkedin(v: &Value) -> HuntJob {
+    let mut j = normalize_54_career_sites(v);
+    j.source_name = "LinkedIn".into(); j.actor_slug = "fantastic-jobs/advanced-linkedin-job-search-api".into();
+    j
+}
+fn normalize_indeed(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["positionName","title"]), company: alias(v, &["company"]),
+        location: alias(v, &["location"]),
+        work_mode: String::new(), seniority: String::new(), experience: String::new(),
+        salary: alias(v, &["salary"]),
+        posted_date: String::new(),
+        apply_url: alias(v, &["url"]),
+        source_url: alias(v, &["url"]),
+        source_name: "Indeed".into(), actor_slug: "misceres/indeed-scraper".into(),
+        description: concise(alias(v, &["description","snippet","text"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_wellfound(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title"]), company: alias(v, &["companyName"]),
+        location: alias_alt(v, &["locations"], &["location"]),
+        work_mode: if alias_bool(v, "remote",false) { "Remote".into() } else { String::new() },
+        seniority: String::new(), experience: String::new(),
+        salary: alias(v, &["compensation","salary"]),
+        posted_date: alias(v, &["postedAt"]),
+        apply_url: alias(v, &["jobUrl","url"]),
+        source_url: alias(v, &["jobUrl","url"]),
+        source_name: "Wellfound".into(), actor_slug: "crawlerbros/wellfound-scraper".into(),
+        description: concise(alias(v, &["description"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_yc(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title"]), company: alias(v, &["companyName"]),
+        location: alias(v, &["location"]),
+        work_mode: String::new(),
+        seniority: alias(v, &["experience"]),
+        experience: String::new(),
+        salary: alias_alt(v, &["salaryRange"], &["salaryMin","salaryMax","salaryCurrency"]),
+        posted_date: alias(v, &["datePosted"]),
+        apply_url: alias(v, &["applyUrl"]),
+        source_url: alias(v, &["companyUrl","applyUrl"]),
+        source_name: "YC Startup Jobs".into(), actor_slug: "memo23/y-combinator-scraper".into(),
+        description: concise(alias(v, &["description"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_welcome_jungle(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title"]), company: alias(v, &["company"]),
+        location: alias_alt(v, &["location"], &["country"]),
+        work_mode: if alias_bool(v, "remote",false) { "Remote".into() } else { String::new() },
+        seniority: String::new(), experience: String::new(),
+        salary: alias(v, &["salary"]),
+        posted_date: alias(v, &["date_posted"]),
+        apply_url: alias(v, &["url"]),
+        source_url: alias(v, &["url"]),
+        source_name: "Welcome to the Jungle".into(), actor_slug: "shahidirfan/jungle-job-scraper".into(),
+        description: concise(alias(v, &["description","text"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_hiring_cafe(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias_alt(v, &["job_information_title"], &["v5_processed_job_data_core_job_title","v5_processed_job_data_job_category"]),
+        company: alias(v, &["v5_processed_job_data_company_name","enriched_company_data_name"]),
+        location: alias(v, &["v5_processed_job_data_formatted_workplace_location","v5_processed_job_data_workplace_countries"]),
+        work_mode: alias(v, &["v5_processed_job_data_workplace_type"]),
+        seniority: alias(v, &["v5_processed_job_data_seniority_level"]),
+        experience: alias(v, &["v5_processed_job_data_min_industry_and_role_yoe"]),
+        salary: alias_alt(v, &["v5_processed_job_data_yearly_min_compensation","v5_processed_job_data_yearly_max_compensation"], &["v5_processed_job_data_listed_compensation_currency"]),
+        posted_date: alias(v, &["v5_processed_job_data_estimated_publish_date"]),
+        apply_url: alias(v, &["apply_url"]),
+        source_url: alias(v, &["source","apply_url"]),
+        source_name: "HiringCafe".into(), actor_slug: "memo23/apify-hiring-cafe-scraper".into(),
+        description: concise(alias(v, &["job_information_description"]), 1800),
+        requirements: listify(v, &["v5_processed_job_data_requirements_summary"]),
+        skills: listify(v, &["v5_processed_job_data_technical_tools"]),
+    }
+}
+fn normalize_we_work_remotely(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title"]), company: alias(v, &["company"]),
+        location: alias(v, &["location"]),
+        work_mode: "Remote".into(), seniority: String::new(), experience: String::new(),
+        salary: alias_alt(v, &["salary"], &["min_salary","max_salary","currency"]),
+        posted_date: alias(v, &["date_posted"]),
+        apply_url: alias(v, &["apply_url","url"]),
+        source_url: alias(v, &["url"]),
+        source_name: "We Work Remotely".into(), actor_slug: "shahidirfan/weworkremotely-job-scrapper".into(),
+        description: concise(alias(v, &["description","text"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_4_day_week(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title"]), company: alias(v, &["company"]),
+        location: alias(v, &["location"]),
+        work_mode: String::new(), seniority: String::new(), experience: String::new(),
+        salary: alias(v, &["salary"]),
+        posted_date: alias(v, &["postedAt"]),
+        apply_url: alias(v, &["jobUrl","url"]),
+        source_url: alias(v, &["jobUrl","url"]),
+        source_name: "4 Day Week".into(), actor_slug: "crawlerbros/four-day-week-jobs-scraper".into(),
+        description: concise(alias(v, &["description","text"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_flexjobs(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title"]), company: alias(v, &["company"]),
+        location: alias_alt(v, &["job_locations"], &["allowed_candidate_location","locations"]),
+        work_mode: alias_alt(v, &["remote_options"], &["job_schedules"]),
+        seniority: String::new(), experience: String::new(),
+        salary: String::new(),
+        posted_date: alias(v, &["posted_date"]),
+        apply_url: alias(v, &["slug","url"]),
+        source_url: alias(v, &["slug","url"]),
+        source_name: "FlexJobs".into(), actor_slug: "stealth_mode/flexjobs-jobs-search-scraper".into(),
+        description: concise(alias(v, &["description","job_summary"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_himalayas(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title"]), company: alias(v, &["company_name"]),
+        location: alias(v, &["location"]),
+        work_mode: alias(v, &["work_mode"]),
+        seniority: alias(v, &["experience_level"]),
+        experience: String::new(),
+        salary: alias_alt(v, &["salary_min"], &["salary_max","currency","salary_period"]),
+        posted_date: alias(v, &["posted_at"]),
+        apply_url: alias(v, &["apply_url"]),
+        source_url: alias(v, &["source_url","data_source_url"]),
+        source_name: "Himalayas".into(), actor_slug: "inlifeprojects/himalayas-jobs-scraper".into(),
+        description: concise(alias(v, &["description"]), 1800),
+        requirements: vec![], skills: listify(v, &["tags"]),
+    }
+}
+fn normalize_just_remote(v: &Value) -> HuntJob {
+    let company = v.get("companyInfo").and_then(|c| c.get("Name")).and_then(|x| x.as_str()).unwrap_or("Not available").to_string();
+    HuntJob {
+        title: alias(v, &["Title"]), company,
+        location: String::new(),
+        work_mode: String::new(), seniority: String::new(), experience: String::new(),
+        salary: alias(v, &["Salary and Perks"]),
+        posted_date: String::new(),
+        apply_url: alias(v, &["Apply Link","URL"]),
+        source_url: alias(v, &["URL","Apply Link"]),
+        source_name: "JustRemote".into(), actor_slug: "kinaesthetic_millionaire/justremote".into(),
+        description: concise(alias(v, &["Description"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_remotive(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title","name"]), company: alias(v, &["company","company_name"]),
+        location: alias(v, &["candidate_required_location","location"]),
+        work_mode: "Remote".into(), seniority: String::new(), experience: String::new(),
+        salary: alias(v, &["salary"]),
+        posted_date: alias(v, &["publication_date","date"]),
+        apply_url: alias(v, &["url","apply_url"]),
+        source_url: alias(v, &["url","apply_url"]),
+        source_name: "Remotive".into(), actor_slug: "santamaria-automations/remotive-scraper".into(),
+        description: concise(alias(v, &["description"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_generic(v: &Value) -> HuntJob {
+    HuntJob {
+        title: alias(v, &["title","jobTitle","position","name"]),
+        company: alias(v, &["company","companyName","employer","organization","company_name"]),
+        location: alias(v, &["location","jobLocation","city","country","locations"]),
+        work_mode: alias(v, &["remoteType","remote","workplaceType","work_mode"]),
+        seniority: alias(v, &["seniority","experience_level","seniorityLevel"]),
+        experience: alias(v, &["experience","yearsExperience"]),
+        salary: alias(v, &["salary","salaryRange","compensation","salary_range","min_salary"]),
+        posted_date: alias(v, &["postedAt","postedDate","datePosted","createdAt","publishedAt","posted_at","date_posted"]),
+        apply_url: alias(v, &["applyUrl","applyURL","apply_url","url","jobUrl","jobURL","link"]),
+        source_url: alias(v, &["sourceUrl","sourceURL","postingUrl","jobUrl","url","link"]),
+        source_name: String::new(), actor_slug: String::new(),
+        description: concise(alias(v, &["description","jobDescription","text","summary","details"]), 1800),
+        requirements: vec![], skills: vec![],
+    }
+}
+fn normalize_hunt_job(site: &str, v: &Value) -> HuntJob {
+    let mut j = match site {
+        "54 Career Sites" => normalize_54_career_sites(v),
+        "LinkedIn" => normalize_linkedin(v),
+        "Indeed" => normalize_indeed(v),
+        "Wellfound" => normalize_wellfound(v),
+        "YC Startup Jobs" => normalize_yc(v),
+        "Welcome to the Jungle" => normalize_welcome_jungle(v),
+        "HiringCafe" => normalize_hiring_cafe(v),
+        "We Work Remotely" => normalize_we_work_remotely(v),
+        "4 Day Week" => normalize_4_day_week(v),
+        "FlexJobs" => normalize_flexjobs(v),
+        "Himalayas" => normalize_himalayas(v),
+        "JustRemote" => normalize_just_remote(v),
+        "Remotive" => normalize_remotive(v),
+        _ => normalize_generic(v),
+    };
+    if j.source_name.is_empty() { j.source_name = site.to_string(); }
+    j
+}
+
+
+fn filter_terms(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty() && !matches!(s.as_str(), "none"|"no"|"n/a"|"na"|"any"))
+        .collect()
+}
+fn job_search_text(j: &HuntJob) -> String {
+    format!("{} {} {} {} {} {} {}", j.title, j.company, j.location, j.description, j.requirements.join(" "), j.skills.join(" "), j.seniority).to_lowercase()
+}
+fn contains_any_term(text: &str, terms: &[String]) -> bool { terms.iter().any(|t| !t.is_empty() && text.contains(t)) }
+fn location_aliases(term: &str) -> Vec<String> {
+    let t = term.trim().to_lowercase();
+    match t.as_str() {
+        "united kingdom" | "uk" | "great britain" => vec!["united kingdom","uk","great britain","england","scotland","wales","northern ireland","london"].into_iter().map(String::from).collect(),
+        "new zealand" | "nz" => vec!["new zealand","nz","auckland","wellington"].into_iter().map(String::from).collect(),
+        "united states" | "usa" | "us" => vec!["united states","usa","us","america"].into_iter().map(String::from).collect(),
+        _ => vec![t]
+    }
+}
+fn selected_location_terms(h: &HuntRunInput) -> Vec<String> {
+    h.location.split(',')
+        .flat_map(|s| location_aliases(s))
+        .filter(|s| !s.is_empty() && s != "worldwide")
+        .collect()
+}
+fn location_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
+    if h.location.to_lowercase().contains("worldwide") { return true; }
+    let wanted = selected_location_terms(h);
+    if wanted.is_empty() { return true; }
+    let loc = j.location.to_lowercase();
+    if loc.trim().is_empty() || loc == "not available" { return true; }
+    if loc.contains("worldwide") || loc.contains("anywhere") || loc.contains("global") { return true; }
+    if h.work_mode == "Remote" && j.work_mode.to_lowercase().contains("remote") { return true; }
+    wanted.iter().any(|w| loc.contains(w))
+}
+fn work_mode_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
+    if h.work_mode != "Remote" { return true; }
+    let wm = j.work_mode.to_lowercase();
+    if wm.trim().is_empty() || wm == "not available" { return true; }
+    if wm.contains("remote") || wm.contains("hybrid") || wm.contains("distributed") || wm.contains("worldwide") { return true; }
+    !(wm.contains("onsite") || wm.contains("on-site") || wm.contains("on site") || wm.contains("office"))
+}
+fn seniority_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
+    let target = h.seniority.to_lowercase();
+    let s = format!("{} {} {}", j.seniority, j.experience, j.title).to_lowercase();
+    if target.trim().is_empty() || s.trim().is_empty() { return true; }
+    let wants_early = target.contains("entry") || target.contains("associate") || target.contains("junior");
+    let wants_senior = target.contains("senior") || target.contains("lead") || target.contains("principal");
+    if wants_early && (s.contains("senior") || s.contains("principal") || s.contains("staff") || s.contains("lead") || s.contains("director") || s.contains("head of")) { return false; }
+    if wants_senior && (s.contains("intern") || s.contains("entry") || s.contains("graduate") || s.contains("junior")) { return false; }
+    true
+}
+fn extract_numbers(text: &str) -> Vec<i64> {
+    let mut nums=vec![]; let mut cur=String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() { cur.push(ch); }
+        else if !cur.is_empty() { if let Ok(n)=cur.parse::<i64>() { nums.push(n); } cur.clear(); }
+    }
+    if !cur.is_empty() { if let Ok(n)=cur.parse::<i64>() { nums.push(n); } }
+    nums
+}
+fn experience_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
+    let target = h.experience.to_lowercase();
+    let text = format!("{} {}", j.experience, j.requirements.join(" ")).to_lowercase();
+    if target.trim().is_empty() || text.trim().is_empty() { return true; }
+    let max_allowed = if target.contains("0") && target.contains("1") && !target.contains("3") { Some(1) }
+        else if target.contains("1") && target.contains("3") { Some(3) }
+        else if target.contains("3") && target.contains("5") { Some(5) }
+        else { None };
+    let Some(max_allowed)=max_allowed else { return true; };
+    let nums = extract_numbers(&text);
+    if nums.is_empty() { return true; }
+    nums.into_iter().min().map(|n| n <= max_allowed + 1).unwrap_or(true)
+}
+fn salary_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
+    let min = min_salary_num(h);
+    if min <= 0 { return true; }
+    let s = j.salary.to_lowercase().replace(',', "");
+    if s.trim().is_empty() || s == "not available" { return true; }
+    let mut nums = extract_numbers(&s);
+    if nums.is_empty() { return true; }
+    if s.contains('k') { nums = nums.into_iter().map(|n| if n < 1000 { n*1000 } else { n }).collect(); }
+    let max_seen = nums.into_iter().max().unwrap_or(0);
+    if max_seen < 1000 { return true; }
+    max_seen >= min
+}
+fn posted_days_limit(h: &HuntRunInput) -> Option<i64> {
+    match h.posted_within.as_str() { "1 week" => Some(7), "3 weeks" => Some(21), "1 month" => Some(31), "3 months" => Some(93), _ => None }
+}
+fn relative_posted_within(s: &str, limit: i64) -> Option<bool> {
+    let t=s.to_lowercase();
+    if t.contains("today") || t.contains("just now") { return Some(true); }
+    if t.contains("yesterday") { return Some(1 <= limit); }
+    let nums=extract_numbers(&t); let n=*nums.first()?;
+    if t.contains("day") { Some(n <= limit) }
+    else if t.contains("week") { Some(n*7 <= limit) }
+    else if t.contains("month") { Some(n*31 <= limit) }
+    else { None }
+}
+fn posted_date_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
+    let Some(limit)=posted_days_limit(h) else { return true; };
+    let s=j.posted_date.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("not available") { return true; }
+    if let Some(ok)=relative_posted_within(s, limit) { return ok; }
+    let now=chrono::Utc::now();
+    if let Ok(dt)=chrono::DateTime::parse_from_rfc3339(s) { return now.signed_duration_since(dt.with_timezone(&chrono::Utc)).num_days() <= limit; }
+    for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y"] {
+        if let Ok(d)=chrono::NaiveDate::parse_from_str(s.get(0..std::cmp::min(s.len(),10)).unwrap_or(s), fmt) {
+            if let Some(ndt)=d.and_hms_opt(0,0,0) { return now.signed_duration_since(ndt.and_utc()).num_days() <= limit; }
+        }
+    }
+    true
+}
+fn post_filter_reason(h: &HuntRunInput, j: &HuntJob) -> Option<String> {
+    if j.title.trim().is_empty() || j.company.trim().is_empty() { return Some("missing title/company".into()); }
+    let avoid = filter_terms(&h.exclude_keywords);
+    if !avoid.is_empty() && contains_any_term(&job_search_text(j), &avoid) { return Some("avoid keyword".into()); }
+    if !work_mode_matches(h,j) { return Some("work mode mismatch".into()); }
+    if !location_matches(h,j) { return Some("location mismatch".into()); }
+    if !posted_date_matches(h,j) { return Some("posted outside selected range".into()); }
+    if !salary_matches(h,j) { return Some("below minimum salary".into()); }
+    if !seniority_matches(h,j) { return Some("seniority mismatch".into()); }
+    if !experience_matches(h,j) { return Some("experience mismatch".into()); }
+    None
+}
+
+fn string_alias(v:&Value, keys:&[&str])->Option<String>{ for k in keys { if let Some(x)=v.get(*k) { if let Some(s)=x.as_str(){ if !s.trim().is_empty(){ return Some(s.trim().to_string()) } } else if !x.is_null() && (x.is_number() || x.is_boolean()) { return Some(x.to_string()) } } } None }
+fn array_items(raw: Value)->Vec<Value>{ if let Some(a)=raw.as_array(){ return a.clone(); } for k in ["items","data","datasetItems","results"] { if let Some(a)=raw.get(k).and_then(|v|v.as_array()){ return a.clone(); } } vec![raw] }
+fn dedupe_key(company:&str,title:&str,apply:&str,source:&str)->String{ format!("{}:{}:{}:{}",company.to_lowercase(),title.to_lowercase(),apply.to_lowercase(),source.to_lowercase()) }
+fn normalize_job(v:&Value)->Result<JobRecord,String>{ let title=string_alias(v,&["title","jobTitle","position","name"]).ok_or("missing title")?; let company=string_alias(v,&["company","companyName","employer","organization"]).ok_or("missing company")?; let apply_url=string_alias(v,&["applyUrl","applyURL","url","jobUrl","jobURL","link"]).ok_or("missing applyUrl/sourceUrl")?; let source_url=string_alias(v,&["sourceUrl","sourceURL","postingUrl","jobUrl","url","link"]).unwrap_or_else(||apply_url.clone()); let remote=string_alias(v,&["remoteType","remote","workplaceType"]).unwrap_or_else(||"unknown".into()).to_lowercase(); let remote_type=if remote.contains("hybrid"){"hybrid"}else if remote.contains("remote")||remote=="true"{"remote"}else if remote.contains("onsite")||remote.contains("office"){"onsite"}else{"unknown"}.to_string(); let key=dedupe_key(&company,&title,&apply_url,&source_url); Ok(JobRecord{id:short_hash(&key),title,company,location:string_alias(v,&["location","jobLocation","city"]),remote_type,description:string_alias(v,&["description","jobDescription","text","summary"]),salary_range:string_alias(v,&["salary","salaryRange","compensation"]),apply_url,source_url,source_type:"apify".into(),dedupe_key:key,status:"new".into(),created_at:now()}) }
+
+#[tauri::command]
+fn import_apify_json(input: ImportInput)->Result<ImportResult,String>{ let path=safe_project_path(&input.project_slug,&input.path)?; let raw:Value=serde_json::from_str(&fs::read_to_string(path).map_err(|e|e.to_string())?).map_err(|e|format!("Malformed JSON: {e}"))?; let items=array_items(raw); let mut db=load_db()?; let mut imported=0; let mut skipped_reasons=vec![]; for (idx,item) in items.iter().enumerate(){ match normalize_job(item){ Ok(job)=>{ if db.jobs.iter().any(|j| j.project_slug==input.project_slug && j.job.dedupe_key==job.dedupe_key){ continue; } db.jobs.push(StoredJob{project_slug:input.project_slug.clone(),job}); imported+=1; }, Err(reason)=>skipped_reasons.push(format!("row {}: {}",idx+1,reason)) } } save_db(&db)?; Ok(ImportResult{imported,skipped:skipped_reasons.len(),skipped_reasons}) }
+#[tauri::command]
+fn list_jobs(project_slug:String,status:Option<String>)->Result<Vec<JobRecord>,String>{ let mut jobs:Vec<_>=load_db()?.jobs.into_iter().filter(|j|j.project_slug==project_slug).map(|j|j.job).filter(|j|status.as_ref().map(|s|s=="all"||&j.status==s).unwrap_or(true)).collect(); jobs.sort_by(|a,b|b.created_at.cmp(&a.created_at)); Ok(jobs) }
+#[tauri::command]
+fn update_job_status(input:JobStatusInput)->Result<JobRecord,String>{ let mut db=load_db()?; let mut out=None; for stored in &mut db.jobs{ if stored.project_slug==input.project_slug && stored.job.id==input.job_id{ stored.job.status=input.status.clone(); out=Some(stored.job.clone()); break; } } save_db(&db)?; out.ok_or("Job not found".into()) }
+
+#[tauri::command]
+fn generate_application_packet(input:PacketInput)->Result<ApplicationPacket,String>{ let mut db=load_db()?; if let Some(p)=db.packets.iter().find(|p|p.job_id==input.job_id).cloned(){return Ok(p)}; let stored=db.jobs.iter_mut().find(|j|j.project_slug==input.project_slug && j.job.id==input.job_id).ok_or("Job not found")?; let job=stored.job.clone(); let rel=format!("applications/{}-{}-{}",slugify(&job.company),slugify(&job.title),job.id); let root=project_root(&input.project_slug)?; let packet_root=root.join(&rel); for dir in ["input","tasks","templates","output"]{fs::create_dir_all(packet_root.join(dir)).map_err(|e|e.to_string())?;} write_if_missing(&packet_root.join("input/job_posting.json"),&serde_json::to_string_pretty(&job).unwrap())?; if root.join("profile/resume_extracted.md").exists(){ let _=fs::copy(root.join("profile/resume_extracted.md"),packet_root.join("input/resume_extracted.md")); } if root.join("profile/preferences.json").exists(){ let _=fs::copy(root.join("profile/preferences.json"),packet_root.join("input/user_preferences.json")); } write_if_missing(&packet_root.join("tasks/tailor_resume.md"),"# Tailor Resume\n\nUse `input/resume_extracted.md` and `input/job_posting.json`. Tailor truthfully; do not invent experience.\n")?; write_if_missing(&packet_root.join("tasks/verify_resume.md"),"# Verify Resume\n\nCheck tailored materials against the source resume and job posting. Flag unsupported claims.\n")?; write_if_missing(&packet_root.join("tasks/generate_outreach.md"),"# Generate Outreach\n\nDraft concise outreach grounded in the job posting and user profile.\n")?; write_if_missing(&packet_root.join("templates/resume_template.tex"),"% Resume template placeholder\n")?; stored.job.status="packet_created".into(); let packet=ApplicationPacket{id:short_hash(&format!("{}:{}",input.project_slug,input.job_id)),job_id:input.job_id,relative_path:rel,status:"ready".into(),created_at:now()}; db.packets.push(packet.clone()); save_db(&db)?; Ok(packet) }
+#[tauri::command]
+fn list_packets(project_slug:String)->Result<Vec<ApplicationPacket>,String>{ let job_ids:Vec<String>=load_db()?.jobs.into_iter().filter(|j|j.project_slug==project_slug).map(|j|j.job.id).collect(); Ok(load_db()?.packets.into_iter().filter(|p|job_ids.contains(&p.job_id)).collect()) }
+
+fn default_chat_session(c: &Connection, project_slug: &str) -> Result<String, String> {
+    let mut stmt = c.prepare("SELECT id FROM chat_sessions WHERE project_slug=?1 ORDER BY created_at LIMIT 1").map_err(|e| e.to_string())?;
+    let existing: Result<String, _> = stmt.query_row(params![project_slug], |r| r.get(0));
+    if let Ok(id) = existing { return Ok(id); }
+    let id = short_hash(&format!("chat:{}", project_slug)); let t = now();
+    c.execute("INSERT INTO chat_sessions(id,project_slug,title,created_at,updated_at) VALUES(?1,?2,'Project Chat',?3,?3)", params![id, project_slug, t]).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn list_chat_sessions(project_slug: String) -> Result<Vec<ChatSession>, String> {
+    let c = conn()?; let _ = default_chat_session(&c, &project_slug)?;
+    let mut stmt = c.prepare("SELECT id,project_slug,title,created_at,updated_at FROM chat_sessions WHERE project_slug=?1 ORDER BY updated_at DESC").map_err(|e| e.to_string())?;
+    let sessions = stmt.query_map(params![project_slug], |r| Ok(ChatSession{id:r.get(0)?,project_slug:r.get(1)?,title:r.get(2)?,created_at:r.get(3)?,updated_at:r.get(4)?})).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    Ok(sessions)
+}
+
+#[tauri::command]
+fn create_chat_session(input: CreateChatSessionInput) -> Result<ChatSession, String> {
+    let c = conn()?; let t = now(); let title = input.title.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d-%H-%M").to_string());
+    let session = ChatSession { id: uuid::Uuid::new_v4().to_string(), project_slug: input.project_slug, title, created_at: t.clone(), updated_at: t };
+    c.execute("INSERT INTO chat_sessions(id,project_slug,title,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)", params![session.id, session.project_slug, session.title, session.created_at, session.updated_at]).map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
+#[tauri::command]
+fn delete_chat_session(input: DeleteChatSessionInput) -> Result<(), String> {
+    let c = conn()?;
+    let count: i64 = c.query_row("SELECT COUNT(*) FROM chat_sessions WHERE project_slug=?1", params![input.project_slug], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if count <= 1 { return Err("Keep at least one agent session".into()); }
+    c.execute("DELETE FROM chat_messages WHERE session_id=?1", params![input.session_id]).map_err(|e| e.to_string())?;
+    c.execute("DELETE FROM chat_sessions WHERE id=?1", params![input.session_id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_chat_messages(input: ListChatInput) -> Result<Vec<ChatMessage>, String> {
+    let c = conn()?; let session_id = match input.session_id { Some(id) => id, None => default_chat_session(&c, &input.project_slug)? };
+    let mut stmt = c.prepare("SELECT id,role,content,linked_file_path,linked_job_id,created_at FROM chat_messages WHERE session_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+    let messages = stmt.query_map(params![session_id], |r| Ok(ChatMessage{id:r.get(0)?,role:r.get(1)?,content:r.get(2)?,linked_file_path:r.get(3)?,linked_job_id:r.get(4)?,created_at:r.get(5)?})).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    Ok(messages)
+}
+
+#[tauri::command]
+fn save_chat_message(input: SaveChatInput) -> Result<ChatMessage, String> {
+    if input.content.trim().is_empty() { return Err("Message cannot be empty".into()); }
+    let c = conn()?; let session_id = match input.session_id.clone() { Some(id) => id, None => default_chat_session(&c, &input.project_slug)? }; let created_at = now();
+    let msg = ChatMessage { id: uuid::Uuid::new_v4().to_string(), role: input.role, content: input.content, linked_file_path: input.linked_file_path, linked_job_id: input.linked_job_id, created_at };
+    c.execute("INSERT INTO chat_messages(id,session_id,role,content,linked_file_path,linked_job_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![msg.id, session_id, msg.role, msg.content, msg.linked_file_path, msg.linked_job_id, msg.created_at]).map_err(|e| e.to_string())?;
+    c.execute("UPDATE chat_sessions SET updated_at=?1 WHERE id=?2", params![msg.created_at, session_id]).map_err(|e| e.to_string())?;
+    let transcript = project_root(&input.project_slug)?.join("chats/project-chat.md");
+    let line = format!("\n\n## {} · {}\n\n{}\n", msg.role, msg.created_at, msg.content);
+    use std::io::Write; fs::OpenOptions::new().create(true).append(true).open(transcript).and_then(|mut f| f.write_all(line.as_bytes())).map_err(|e| e.to_string())?;
+    Ok(msg)
+}
+
+#[tauri::command]
+fn create_task_file_from_chat(input: ChatTaskInput) -> Result<String, String> {
+    if input.content.trim().is_empty() { return Err("Task content cannot be empty".into()); }
+    let name = input.file_name.unwrap_or_else(|| format!("chat-task-{}.md", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
+    let safe = slugify(name.trim_end_matches(".md"));
+    let rel = format!("chats/{}.md", if safe.is_empty() { "chat-task".into() } else { safe });
+    let path = safe_project_path(&input.project_slug, &rel)?;
+    write_if_missing(&path, &format!("# Chat Task\n\n{}\n", input.content))?;
+    Ok(rel)
+}
+
+fn find_bin(name: &str) -> String {
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        let p = format!("{}/{}", dir, name);
+        if Path::new(&p).exists() { return p; }
+    }
+    name.into()
+}
+
+fn codex_bin() -> String { find_bin("codex") }
+fn codex_connection_path() -> Result<PathBuf, String> { Ok(app_root()?.join("codex-connection.json")) }
+fn codex_app_enabled() -> bool { codex_connection_path().ok().and_then(|p| fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v["enabled"].as_bool()).unwrap_or(false) }
+fn set_codex_app_enabled(enabled: bool) -> Result<(), String> { let p=codex_connection_path()?; if let Some(parent)=p.parent(){fs::create_dir_all(parent).map_err(|e| e.to_string())?;} fs::write(p, serde_json::json!({"enabled":enabled,"updatedAt":now()}).to_string()).map_err(|e| e.to_string()) }
+
+#[tauri::command]
+fn agent_respond(input: AgentRespondInput) -> Result<String, String> {
+    let root = project_root(&input.project_slug)?;
+    let mut prompt = format!("You are the local Drop the Grind job-search agent. Answer concisely and use the project workspace as context when relevant.\n\nUser message:\n{}", input.prompt);
+    if let Some(p) = input.linked_file_path { prompt.push_str(&format!("\n\nCurrently selected file: {}", p)); }
+    let out = Command::new(codex_bin())
+        .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+        .args(["exec", "--cd", root.to_str().ok_or("Invalid project path")?, "--skip-git-repo-check", "--sandbox", "workspace-write", "--"])
+        .arg(prompt)
+        .output()
+        .map_err(|e| format!("Could not run Codex: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() { return Err(format!("Codex failed: {}", if stderr.is_empty(){stdout}else{stderr})); }
+    if stdout.is_empty() { return Err(if stderr.is_empty(){"Codex returned no response".into()}else{stderr}); }
+    Ok(stdout)
+}
+
+#[tauri::command]
+fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
+    let root = project_root(&input.project_slug)?;
+    let run_id = input.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/resume_current.*, resources/, jobs/, applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create.\n\nUser message:\n{}", input.prompt);
+    if let Some(p) = input.linked_file_path { prompt.push_str(&format!("\n\nCurrently selected file: {}", p)); }
+    let model = input.model.unwrap_or_else(|| "gpt-5.5".into());
+    let effort = input.effort.unwrap_or_else(|| "low".into());
+    let root_str = root.to_str().ok_or("Invalid project path")?.to_string();
+    let apify_token = read_apify_key().ok().flatten();
+    let mut child_cmd = Command::new(codex_bin());
+    child_cmd.env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
+    if let Some(token) = apify_token { child_cmd.env("APIFY_TOKEN", token); }
+    let mut child = child_cmd
+        .arg("app-server")
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not start Codex app-server: {e}"))?;
+    let pid = child.id();
+    state.pids.lock().map_err(|_| "Agent state lock failed")?.insert(run_id.clone(), pid);
+    let _ = on_event.send(AgentRunEvent{run_id:run_id.clone(),kind:"started".into(),text:format!("Starting Codex app-server · pid {pid}")});
+    if let Some(stderr) = child.stderr.take() {
+        let event_err = on_event.clone(); let id = run_id.clone();
+        thread::spawn(move || { for line in BufReader::new(stderr).lines().map_while(Result::ok) { let _ = event_err.send(AgentRunEvent{run_id:id.clone(),kind:"stderr".into(),text:line}); } });
+    }
+    let mut stdin = child.stdin.take().ok_or("Codex stdin unavailable")?;
+    let stdout = child.stdout.take().ok_or("Codex stdout unavailable")?;
+    let event_stream = on_event.clone(); let id = run_id.clone();
+    thread::spawn(move || {
+        let send = |stdin: &mut std::process::ChildStdin, v: Value| -> Result<(), String> {
+            writeln!(stdin, "{}", serde_json::to_string(&v).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            stdin.flush().map_err(|e| e.to_string())
+        };
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"drop-the-grind","version":"0.1.0"},"capabilities":{"experimentalApi":true}}});
+        let thread_start = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"cwd":root_str,"model":model,"approvalPolicy":"never","sandbox":"workspace-write","ephemeral":true}});
+        let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:"Waiting for app-server initialize response".into()});
+        if let Err(e)=send(&mut stdin, init).and_then(|_| send(&mut stdin, thread_start)) { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:e}); return; }
+        let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:"Waiting for thread/start response".into()});
+        let mut thread_id = String::new();
+        let (tx, rx) = mpsc::channel::<String>();
+        thread::spawn(move || { for line in BufReader::new(stdout).lines().map_while(Result::ok) { if tx.send(line).is_err(){break;} } });
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex thread/start response".into()}); return; }
+            let Ok(line)=rx.recv_timeout(remaining.min(Duration::from_millis(500))) else { continue; };
+            let Ok(v): Result<Value,_> = serde_json::from_str(line.trim()) else { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Non-JSON app-server output: {}", line.chars().take(80).collect::<String>())}); continue; };
+            if v["id"] == 1 { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:"App-server initialized".into()}); }
+            if v["id"] == 2 { if let Some(err)=v["error"]["message"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:err.into()}); return; } if let Some(t)=v["result"]["thread"]["id"].as_str() { thread_id=t.to_string(); break; } }
+            if let Some(method)=v["method"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:method.into()}); }
+        }
+        if thread_id.is_empty() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:"Codex app-server did not create a thread".into()}); return; }
+        let turn = serde_json::json!({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":thread_id,"input":[{"type":"text","text":prompt}],"model":model,"effort":effort}});
+        let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Thread created · starting turn · model {model} · thinking {effort}")});
+        if let Err(e)=send(&mut stdin, turn) { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:e}); return; }
+        let started_at = std::time::Instant::now();
+        let mut last_activity = std::time::Instant::now();
+        let max_total = Duration::from_secs(20 * 60);
+        let max_idle = Duration::from_secs(5 * 60);
+        loop {
+            if started_at.elapsed() > max_total { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex turn to finish after 20 minutes".into()}); break; }
+            if last_activity.elapsed() > max_idle { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex activity for 5 minutes".into()}); break; }
+            let Ok(line)=rx.recv_timeout(Duration::from_millis(500)) else { continue; };
+            last_activity = std::time::Instant::now();
+            let Ok(v): Result<Value,_> = serde_json::from_str(line.trim()) else { continue; };
+            if v["id"] == 3 { if let Some(err)=v["error"]["message"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:err.into()}); return; } }
+            let Some(method)=v["method"].as_str() else { continue; };
+            match method {
+                "item/agentMessage/delta" => if let Some(delta)=v["params"]["delta"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"delta".into(),text:delta.into()}); },
+                "item/started" => if let Some(t)=v["params"]["item"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Started {t}")}); },
+                "item/completed" => if let Some(t)=v["params"]["item"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Completed {t}")}); },
+                "turn/completed" => { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"completed".into(),text:"Done".into()}); break; },
+                "thread/status/changed" => if let Some(t)=v["params"]["status"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Thread {t}")}); },
+                _ => {}
+            }
+        }
+        let _ = child.kill();
+    });
+    Ok(run_id)
+}
+
+#[tauri::command]
+fn cancel_agent_run(app: AppHandle, state: State<AgentRunState>, input: CancelAgentRunInput) -> Result<(), String> {
+    if let Some(pid) = state.pids.lock().map_err(|_| "Agent state lock failed")?.remove(&input.run_id) {
+        let _ = Command::new("/bin/kill").arg("-TERM").arg(pid.to_string()).output();
+        let _ = app.emit("agent-run-event", AgentRunEvent{run_id:input.run_id,kind:"cancelled".into(),text:"Cancelled".into()});
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn codex_status() -> CodexStatus {
+    let bin = codex_bin();
+    if !codex_app_enabled() {
+        let version = Command::new(&bin).env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin").arg("--version").output().ok().and_then(|o| if o.status.success(){Some(String::from_utf8_lossy(&o.stdout).trim().to_string())}else{None});
+        return CodexStatus{installed:version.is_some(),connected:false,auth_mode:None,version,detail:"Not connected in Drop the Grind".into()};
+    }
+    let version = Command::new(&bin).env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin").arg("--version").output().ok().and_then(|o| if o.status.success(){Some(String::from_utf8_lossy(&o.stdout).trim().to_string())}else{None});
+    let auth_path = dirs::home_dir().map(|h| h.join(".codex/auth.json"));
+    let fallback = || {
+        if let Some(path) = &auth_path {
+            if let Ok(raw) = fs::read_to_string(path) {
+                if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+                    let mode = v["auth_mode"].as_str().map(|s| s.to_string());
+                    let has_chatgpt = mode.as_deref() == Some("chatgpt") && v["tokens"]["access_token"].as_str().is_some();
+                    if has_chatgpt { return Some(CodexStatus{installed:true,connected:true,auth_mode:mode,version:version.clone(),detail:"ChatGPT tokens found in ~/.codex/auth.json".into()}); }
+                }
+            }
+        }
+        None
+    };
+    if version.is_none() { return fallback().unwrap_or(CodexStatus{installed:false,connected:false,auth_mode:None,version:None,detail:format!("Codex CLI could not execute. Looked for {bin}. Bundled app may need PATH for node.")}); }
+    let doctor = Command::new(&bin).env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin").args(["doctor", "--json"]).output();
+    let Ok(out) = doctor else { return fallback().unwrap_or(CodexStatus{installed:true,connected:false,auth_mode:None,version,detail:"Could not run codex doctor".into()}); };
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let auth = &v["checks"]["auth.credentials"];
+    let connected = auth["status"].as_str() == Some("ok");
+    let auth_mode = auth["details"]["stored auth mode"].as_str().map(|s| s.to_string());
+    let tokens = auth["details"]["stored ChatGPT tokens"].as_str().unwrap_or("unknown");
+    if connected { CodexStatus{installed:true,connected,auth_mode,version,detail:format!("ChatGPT tokens: {tokens}")} } else { fallback().unwrap_or(CodexStatus{installed:true,connected:false,auth_mode,version,detail:"Codex auth not configured".into()}) }
+}
+
+fn codex_detect_auth() -> CodexStatus {
+    let bin = codex_bin();
+    let version = Command::new(&bin).env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin").arg("--version").output().ok().and_then(|o| if o.status.success(){Some(String::from_utf8_lossy(&o.stdout).trim().to_string())}else{None});
+    let auth_path = dirs::home_dir().map(|h| h.join(".codex/auth.json"));
+    let fallback = || {
+        if let Some(path) = &auth_path {
+            if let Ok(raw) = fs::read_to_string(path) {
+                if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+                    let mode = v["auth_mode"].as_str().map(|s| s.to_string());
+                    let has_chatgpt = mode.as_deref() == Some("chatgpt") && v["tokens"]["access_token"].as_str().is_some();
+                    if has_chatgpt { return Some(CodexStatus{installed:true,connected:true,auth_mode:mode,version:version.clone(),detail:format!("Found Codex CLI at {bin}. Using existing local ChatGPT Codex credentials from ~/.codex/auth.json")}); }
+                }
+            }
+        }
+        None
+    };
+    if version.is_none() { return fallback().unwrap_or(CodexStatus{installed:false,connected:false,auth_mode:None,version:None,detail:format!("Codex CLI could not execute. Looked for {bin}. Bundled app may need PATH for node.")}); }
+    let doctor = Command::new(&bin).env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin").args(["doctor", "--json"]).output();
+    let Ok(out) = doctor else { return fallback().unwrap_or(CodexStatus{installed:true,connected:false,auth_mode:None,version,detail:"Could not run codex doctor".into()}); };
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let auth = &v["checks"]["auth.credentials"];
+    let connected = auth["status"].as_str() == Some("ok");
+    let auth_mode = auth["details"]["stored auth mode"].as_str().map(|s| s.to_string());
+    let tokens = auth["details"]["stored ChatGPT tokens"].as_str().unwrap_or("unknown");
+    if connected { CodexStatus{installed:true,connected,auth_mode,version,detail:format!("Found Codex CLI at {bin}. Using existing local Codex credentials. ChatGPT tokens: {tokens}")} } else { fallback().unwrap_or(CodexStatus{installed:true,connected:false,auth_mode,version,detail:format!("Found Codex CLI at {bin}, but auth is not configured")}) }
+}
+
+#[tauri::command]
+fn codex_connect() -> Result<CodexStatus, String> {
+    let s = codex_detect_auth();
+    if s.connected { set_codex_app_enabled(true)?; return Ok(s); }
+    if !s.installed { return Ok(s); }
+    Command::new(codex_bin()).env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin").arg("login").spawn().map_err(|e| e.to_string())?;
+    Ok(CodexStatus{installed:true,connected:false,auth_mode:None,version:s.version,detail:"No existing Codex auth found. Started Codex login. Finish sign-in, then click Connect again.".into()})
+}
+
+#[tauri::command]
+fn codex_disconnect() -> Result<CodexStatus, String> {
+    set_codex_app_enabled(false)?;
+    let version = Command::new(codex_bin()).env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin").arg("--version").output().ok().and_then(|o| if o.status.success(){Some(String::from_utf8_lossy(&o.stdout).trim().to_string())}else{None});
+    Ok(CodexStatus{installed:version.is_some(),connected:false,auth_mode:None,version,detail:"Disconnected from Drop the Grind only. Did not modify ~/.codex/auth.json or global Codex login.".into()})
+}
+
+#[tauri::command]
+fn test_apify_token(token: &str) -> Result<(), String> {
+    let out = Command::new("curl")
+        .args(["-sS", "-H", &format!("Authorization: Bearer {token}"), "https://api.apify.com/v2/users/me"])
+        .output()
+        .map_err(|e| format!("Could not reach Apify API: {e}"))?;
+    if !out.status.success() { return Err(format!("Apify API check failed: {}", String::from_utf8_lossy(&out.stderr).trim())); }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let v: Value = serde_json::from_str(&text).map_err(|_| "Apify API returned a non-JSON response".to_string())?;
+    if v["data"]["id"].as_str().is_some() { Ok(()) } else { Err(v["error"]["message"].as_str().unwrap_or("Apify token was rejected").to_string()) }
+}
+
+#[tauri::command]
+fn apify_mcp_status() -> ApifyMcpStatus {
+    match read_apify_key() {
+        Ok(Some(_)) => ApifyMcpStatus{connected:true,detail:"Apify API token saved for Drop the Grind".into()},
+        Ok(None) => ApifyMcpStatus{connected:false,detail:"Needs Apify API token".into()},
+        Err(e) => ApifyMcpStatus{connected:false,detail:e},
+    }
+}
+
+#[tauri::command]
+fn apify_mcp_connect(input: ApifyConnectInput) -> Result<ApifyMcpStatus, String> {
+    let token = input.token.trim();
+    if token.is_empty() { return Err("Apify API token is required".into()); }
+    if !token.starts_with("apify_api_") { return Err("Token should look like apify_api_...".into()); }
+    test_apify_token(token)?;
+    write_setting_key("apifyApiToken", Some(token))?;
+    Ok(ApifyMcpStatus{connected:true,detail:"Apify API connected · token tested and saved locally".into()})
+}
+
+#[tauri::command]
+fn apify_mcp_disconnect() -> Result<ApifyMcpStatus, String> {
+    write_setting_key("apifyApiToken", None)?;
+    Ok(ApifyMcpStatus{connected:false,detail:"Disconnected Apify API from Drop the Grind".into()})
+}
+
+fn read_setting_key(name: &str) -> Result<Option<String>, String> {
+    let path = settings_path()?;
+    if !path.exists() { return Ok(None); }
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    Ok(v[name].as_str().map(|s| s.to_string()).filter(|s| !s.trim().is_empty()))
+}
+fn write_setting_key(name: &str, value: Option<&str>) -> Result<(), String> {
+    fs::create_dir_all(app_root()?).map_err(|e| e.to_string())?;
+    let path = settings_path()?;
+    let mut settings = if path.exists() { fs::read_to_string(&path).ok().and_then(|r| serde_json::from_str::<Value>(&r).ok()).unwrap_or(serde_json::json!({})) } else { serde_json::json!({}) };
+    if let Some(obj) = settings.as_object_mut() { match value { Some(v) => { obj.insert(name.into(), Value::String(v.into())); }, None => { obj.remove(name); } } }
+    fs::write(path, serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+fn read_apify_key() -> Result<Option<String>, String> { read_setting_key("apifyApiToken") }
+fn read_tavily_key() -> Result<Option<String>, String> { read_setting_key("tavilyApiKey") }
+
+fn mask_key(key: &str) -> String {
+    if key.len() <= 10 { return "••••".into(); }
+    format!("{}••••{}", &key[..5], &key[key.len().saturating_sub(4)..])
+}
+
+#[tauri::command]
+fn tavily_status() -> TavilyStatus {
+    match read_tavily_key() {
+        Ok(Some(key)) => TavilyStatus{connected:true,detail:"API key saved".into(),masked_key:Some(mask_key(&key))},
+        Ok(None) => TavilyStatus{connected:false,detail:"Needs Tavily API key".into(),masked_key:None},
+        Err(e) => TavilyStatus{connected:false,detail:e,masked_key:None},
+    }
+}
+
+#[tauri::command]
+fn tavily_connect(input: TavilyConnectInput) -> Result<TavilyStatus, String> {
+    let key = input.api_key.trim();
+    if key.is_empty() { return Err("Tavily API key is required".into()); }
+    if !key.starts_with("tvly-") { return Err("Tavily API key should look like tvly-...".into()); }
+    let body = serde_json::json!({"query":"Drop the Grind Tavily connection test","max_results":1}).to_string();
+    let out = Command::new("curl")
+        .args(["-sS", "-X", "POST", "https://api.tavily.com/search", "-H", &format!("Authorization: Bearer {key}"), "-H", "Content-Type: application/json", "-d", &body])
+        .output().map_err(|e| format!("Could not run curl to test Tavily: {e}"))?;
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() { return Err(format!("Tavily test failed: {text}")); }
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if v.get("error").is_some() || v.get("detail").is_some() { return Err(format!("Tavily rejected the key: {text}")); }
+    write_setting_key("tavilyApiKey", Some(key))?;
+    Ok(TavilyStatus{connected:true,detail:"Tavily search test passed".into(),masked_key:Some(mask_key(key))})
+}
+
+#[tauri::command]
+fn tavily_disconnect() -> Result<TavilyStatus, String> {
+    write_setting_key("tavilyApiKey", None)?;
+    Ok(TavilyStatus{connected:false,detail:"Disconnected".into(),masked_key:None})
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://console.apify.com/") || url.starts_with("https://apify.com/") || url.starts_with("https://app.tavily.com/") || url.starts_with("https://docs.tavily.com/")) { return Err("URL not allowed".into()); }
+    Command::new("open").arg(url).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![create_project, list_workspace_tree, read_text_file, write_text_file])
-        .run(tauri::generate_context!())
-        .expect("error while running Drop the Grind");
-}
+pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,upload_project_file,upload_resume,remove_resume,delete_project_file,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn slugify_project_names() { assert_eq!(slugify("My 2026 Job Search!"), "my-2026-job-search"); }
-    #[test]
-    fn rejects_traversal_paths() { assert!(safe_project_path("demo", "../secrets.txt").is_err()); }
-    #[test]
-    fn rejects_invalid_project_slug() { assert!(project_root("../demo").is_err()); }
-}
+mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} }

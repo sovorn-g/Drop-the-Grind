@@ -1,512 +1,239 @@
-# Drop the Grind — Design Guidelines
+# Drop the Grind — UX/UI Design Guide
 
-Drop the Grind should feel like a **premium local-first macOS job ops cockpit**: dark, compact, calm, file-aware, and operational. It should look closer to Raycast, Arc, Linear, Cursor, or a native AI coding workspace than a generic SaaS dashboard.
+Drop the Grind should feel like a premium dark macOS productivity cockpit for job search operations: local-first, calm, file-aware, and serious.
 
-These guidelines define the aesthetic and interaction direction for the app UI.
+## Product design intent
 
----
+The user is doing repetitive, high-stress job-search work. The UI should reduce friction, make progress visible, and keep generated artifacts transparent. The app should feel like a first-party desktop utility or an AI coding workspace, not a generic SaaS dashboard or resume-builder landing page.
 
-## Design concept
-
-**Concept:** Local-first macOS productivity cockpit for job hunting.
-
-The app helps a tired, busy job seeker turn scattered job sources into reviewed application packets. The interface should reduce friction, show the next action clearly, and make generated files feel inspectable and trustworthy.
-
-**Keywords:**
+## Design keywords
 
 - premium dark mode
-- macOS-native
+- glassy macOS sidebar
 - compact pro-tool density
-- frosted sidebar
-- quiet neon accents
-- local-first transparency
+- LinkedIn-blue action color
+- quiet status feedback
+- local file transparency
 - human-reviewed workflow
 - operational, not playful
 
----
+## Layout model
 
-## Visual direction
-
-### Overall feel
-
-Use a refined dark desktop aesthetic:
-
-- Deep graphite/charcoal surfaces, never flat pure black everywhere.
-- Layered panels with subtle 1px borders.
-- Rounded macOS-like window and card geometry.
-- Compact controls and dense information layout.
-- Accent colors used sparingly as signals, not decoration.
-- Calm, serious, trustworthy mood.
-
-The UI should feel like a tool someone can use for hours during a stressful job hunt.
-
-### Avoid
-
-- Generic SaaS landing-page visuals.
-- Oversized hero cards.
-- Loud purple/blue gradients.
-- Playful resume-builder styling.
-- Overly cute illustrations.
-- Chatbot-first layout that hides the job workflow.
-- Pure black backgrounds with no material depth.
-
----
-
-## Layout system
-
-Use the **Hybrid Job Ops Workspace** layout:
+Use the current split workspace layout from `src/styles.css`:
 
 ```txt
-┌──────────────────────────── Drop the Grind ────────────────────────────┐
-│ Toolbar: Project switcher · source/import status · settings             │
-├──────────── Left ────────┬────────────── Center ──────────────┬─────────┤
-│ Mode nav + file tree     │ Active workspace view               │ Chat    │
-│                          │                                      │ panel   │
-│ Setup                    │ Setup checklist / Source setup /     │ Local   │
-│ Sources                  │ Job Inbox / Packet detail / Editor   │ project │
-│ Job Inbox                │                                      │ chat    │
-│ Packets                  │                                      │         │
-│ Files                    │                                      │         │
-│ Settings                 │                                      │         │
-│                          │                                      │         │
-│ Project files            │                                      │         │
-└──────────────────────────┴──────────────────────────────────────┴─────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Drop the Grind                                                               │
+├───────────────────────┬───────────────────────────────────────┬──────────────┤
+│                       HuntBrief / primary workflow            │              │
+│                       spans left + center columns              │              │
+│                                                               │              │
+├───────────────────────┬───────────────────────────────────────┤ Agent Chat   │
+│ Files / project tree  │ Editor / Preview                       │ spans full   │
+│ Settings at bottom    │ selected file, results, job files      │ height above  │
+│                       │                                       │ status bar   │
+├───────────────────────┴───────────────────────────────────────┴──────────────┤
+│ Status bar                                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Panel sizing
-
-- Left panel: `260–320px` default, `220px` minimum.
-- Center panel: flexible, `520px` minimum.
-- Right chat panel: `320–380px` default, `280px` minimum.
-
-### Narrow window behavior
-
-1. Collapse right chat panel first.
-2. Collapse file tree second.
-3. Keep center workflow usable.
-
----
-
-## Color system
-
-Use named tokens. Values can be adjusted during implementation, but maintain the hierarchy.
+CSS grid model:
 
 ```css
-:root {
-  --dtg-bg: #090a0c;
-  --dtg-bg-elevated: #111215;
-  --dtg-panel: #17181b;
-  --dtg-panel-soft: #202124;
-  --dtg-card: #242528;
-  --dtg-card-hover: #2a2b2f;
-
-  --dtg-border: rgba(255, 255, 255, 0.08);
-  --dtg-border-strong: rgba(255, 255, 255, 0.14);
-
-  --dtg-text: #f2f2f0;
-  --dtg-text-muted: #a7a7a2;
-  --dtg-text-subtle: #73736d;
-
-  --dtg-blue: #4f8cff;
-  --dtg-blue-soft: rgba(79, 140, 255, 0.16);
-  --dtg-green: #21d07a;
-  --dtg-yellow: #f2b84b;
-  --dtg-red: #ff5d5d;
-  --dtg-magenta: #df5cff;
-
-  --dtg-focus: #7aa7ff;
+.workspace-frame {
+  grid-template-columns: 270px minmax(0, 1fr) 320px;
+  grid-template-rows: 30% calc(70% - 28px) 28px;
 }
+
+.hunt-brief-panel { grid-column: 1 / 3; grid-row: 1; }
+.files-panel      { grid-column: 1;     grid-row: 2; }
+.editor-panel     { grid-column: 2;     grid-row: 2; }
+.chat             { grid-column: 3;     grid-row: 1 / 3; }
+.statusbar        { grid-column: 1 / 4; grid-row: 3; }
 ```
 
-### Usage
+### HuntBrief panel
 
-- Background: `--dtg-bg`.
-- Main panels: `--dtg-panel`.
-- Cards and inputs: `--dtg-card` / `--dtg-panel-soft`.
-- Borders: `--dtg-border`.
-- Active selection: blue soft fill + subtle border.
-- Success/ready: green.
-- Warning/partial: yellow.
-- Error/destructive: red.
-- Brand/special status: tiny magenta accent only.
+Purpose:
 
----
+- top workspace command center
+- spans the left and center columns
+- Find Jobs and Import Links entry points
+- source selection
+- Start Hunting dashboard/status view
 
-## Sidebar treatment
+Treatment:
 
-The left sidebar should feel slightly **frosted/glassy**.
+- prominent top panel, not a left sidebar
+- compact vertical height because it shares the screen with Files/Editor below
+- transparent dark glass surface matching the app theme
+- clear loading/progress state while a hunt runs
 
-Recommended treatment:
+### Files panel
 
-- Dark translucent base.
-- Subtle navy/blue ambient gradient.
-- Optional fine noise texture.
-- Thin right border.
-- Soft active row highlight.
+Purpose:
 
-Example direction:
+- lower-left project tree
+- open generated files such as `hunt_run/<name>/results.md` and `jobs/*.md`
+- provide lower-left Settings access
+
+Treatment:
+
+- compact file browser density
+- glass/dark panel styling
+- clear active file row
+- Settings button anchored at the bottom
+
+### Editor / Preview panel
+
+Purpose:
+
+- lower-center file viewer/editor
+- inspect `results.md`, individual job files, notes, and generated artifacts
+
+Treatment:
+
+- readable Markdown/text surface
+- minimal distraction
+- no noisy background behind long-form content
+- strong save/dirty/read-only states
+
+### Agent Chat panel
+
+Purpose:
+
+- full-height right column above the status bar
+- project-aware conversation
+- later resume/outreach assistance using selected files
+- not the Start Hunting execution trigger
+
+Treatment:
+
+- visually stable right rail
+- match the glass direction
+- white/gray chat surfaces, not brown/warm tones
+- do not visually overpower HuntBrief or Editor
+
+## Color direction
+
+Primary action/accent: LinkedIn-like blue.
+
+Recommended token direction:
 
 ```css
-.sidebar {
-  background:
-    radial-gradient(circle at 20% 30%, rgba(64, 105, 205, 0.35), transparent 32%),
-    linear-gradient(180deg, rgba(28, 30, 34, 0.92), rgba(17, 18, 20, 0.96));
-  border-right: 1px solid var(--dtg-border);
-  backdrop-filter: blur(18px);
-}
+--dtg-bg: #090a0c;
+--dtg-panel: rgba(15, 18, 24, 0.78);
+--dtg-panel-strong: rgba(20, 24, 32, 0.88);
+--dtg-border: rgba(255, 255, 255, 0.08);
+--dtg-border-strong: rgba(255, 255, 255, 0.14);
+--dtg-text: #f3f5f7;
+--dtg-muted: #a7adb7;
+--dtg-subtle: #737b88;
+--dtg-blue: #0a66c2;
+--dtg-blue-soft: rgba(10, 102, 194, 0.18);
+--dtg-red: #ff5d5d;
 ```
 
-Do not make the sidebar bright or colorful. The gradient should be felt more than seen.
+Use blue for primary buttons, selected controls, focus rings, and active source states. Use red only for destructive hover/confirmation states.
 
----
+## HuntBrief UX
 
-## Typography
+HuntBrief is the main product workflow.
 
-Use compact, legible typography suitable for dense desktop tools.
+### Find Jobs tab
 
-### Direction
+Keep fields top-down and scannable:
 
-- Small text sizes.
-- Clear hierarchy through weight, opacity, and spacing.
-- Avoid giant page titles.
-- Prefer concise labels and direct action copy.
+- role inputs
+- seniority
+- experience
+- min salary
+- include keywords
+- avoid keywords
+- posted within
+- location full-width row
+- curated source selection
+- Start Hunting action
 
-### Suggested scale
+### Source selection
 
-- Tiny metadata: `11px`
-- Secondary labels: `12px`
-- Body/UI text: `13–14px`
-- Section titles: `15–16px`
-- Large empty-state title: `20–24px`
+Standard and Remote are vertical mode buttons inside the curated source section. Source options should be visible without cramped scroll where practical.
 
-### Font choice
+Default source selection:
 
-Use a high-quality UI font with a native/macOS feel. Avoid generic web-marketing typography.
+- Standard: `54 Career Sites`
+- Remote: `HiringCafe`
 
-Acceptable options:
+Only `54 Career Sites` should have the explanatory hover tooltip. Do not add hover descriptions to every source or Settings chip.
 
-- macOS system UI stack for native fidelity.
-- A refined variable sans if bundled intentionally.
-- Monospace only for JSON, paths, logs, and code/task files.
+### Start Hunting dashboard
 
-Do not use decorative fonts. This app is a serious productivity tool.
+During Start Hunting, HuntBrief should become a progress/dashboard view with safe operational states, not private agent reasoning. Show steps such as:
 
----
+- Preparing hunt run
+- Checking Apify API
+- Running source actors
+- Reading dataset items
+- Normalizing/filtering jobs
+- Writing results
+- Complete
 
-## Components
+The dashboard should include clear completion actions such as Open results and Start another hunt.
 
-### Buttons
+## Results UX
 
-Buttons should be compact and tactile.
+Hunt results should be file-first and agent-friendly.
 
-- Height: `28–34px` for most controls.
-- Border radius: `8–10px`.
-- Primary buttons: filled dark/blue-accented, not oversized.
-- Secondary buttons: dark filled with subtle border.
-- Ghost buttons: sidebar/nav/tool actions.
-- Destructive buttons: red text or red-tinted border, not giant red blocks.
+```txt
+results.md = summary/index
+jobs/*.md = individual job detail files
+```
 
-Button copy should be action-specific:
+This prevents overwhelming the agent with 50–100 jobs and makes resume tailoring a one-job-at-a-time workflow.
 
-- `Create Project`
-- `Generate MCP Task`
-- `Import Output JSON`
-- `Approve`
-- `Reject`
-- `Generate Packet`
-- `Reveal in Finder`
+`results.md` should include:
 
-### Cards
+- run name
+- mode
+- sources
+- generated timestamp
+- max scrape results
+- HuntBrief settings
+- summary counts
+- linked job list
 
-Cards are used for jobs, sources, packets, and setup checklist groups.
+`jobs/*.md` should include:
 
-Style:
-
-- Dark filled surface.
-- 1px subtle border.
-- Radius `12–16px`.
-- Minimal shadow.
-- Hover state raises contrast slightly.
-
-Avoid heavy elevation or bright outlines.
-
-### Badges and pills
-
-Use small rounded badges for:
-
-- job status
-- remote type
-- salary present
-- source type
-- packet status
-- import state
-
-Badge style:
-
-- Font size `11–12px`.
-- Rounded capsule.
-- Muted fill.
-- Subtle border.
-
-Examples:
-
-- `Remote`
-- `Hybrid`
-- `Imported`
-- `Packet created`
-- `Not scored yet`
-- `Partial import`
-
-### Inputs
-
-Inputs should be dark, compact, and bordered.
-
-- Filled dark background.
-- 1px border.
-- Clear focus ring.
-- Placeholder text muted.
-- Search fields should include an icon if available.
-
-### Dividers
-
-Use 1px borders and soft opacity. Do not use thick separators.
-
----
-
-## Primary views
-
-### Setup view
-
-First project screen should show a checklist:
-
-- Add `resume_original.pdf`
-- Add or edit `resume_extracted.md`
-- Review `preferences.json`
-- Add Apify actor/source
-- Generate MCP task/config
-- Import Apify output JSON
-- Review jobs
-- Generate first application packet
-
-Each checklist item should deep-link to the relevant view or file.
-
-### Sources view
-
-Use source cards for Apify/MCP setup.
-
-Each card should show:
-
-- Source name.
-- Actor name.
-- MCP server URL.
-- Input template path.
-- Last import status.
-- Buttons:
-  - `Edit Input JSON`
-  - `Generate MCP Config`
-  - `Generate Run Task`
-  - `Import Output JSON`
-
-Important copy:
-
-> Generate MCP instructions for Codex/opencode, then import the output JSON here.
-
-Do not imply the app directly runs Apify in milestone 1.
-
-### Job Inbox view
-
-This is the core product screen.
-
-Job cards/rows should show:
-
-- title
+- source
 - company
-- location/remote badge
-- salary badge if available
-- source badge
-- fit score placeholder or `Not scored yet`
-- short explanation/warnings
-- actions: `Approve`, `Reject`, `Open Apply URL`, `Generate Packet`
+- location
+- salary
+- posted date
+- apply/original URLs
+- work mode
+- seniority/experience when available
+- requirements
+- key skills
+- capped description
+- resume/outreach note
 
-Empty state:
+Do not show raw actor slugs in the job metadata because Source is the user-facing label.
 
-> No jobs imported yet. Add an Apify actor in Sources, generate the MCP task, then import the JSON output.
+## Interaction principles
 
-Partial import state:
+- Buttons should be compact and tactile.
+- Primary actions use blue; destructive hovers use red.
+- Avoid hidden horizontal overflow from tooltips or pseudo-elements.
+- Dropdowns should use dark styled scrollbars and avoid bright native white scrollbars.
+- Location dropdown should be searchable and compact.
+- Settings popup should open quickly from cached connection state and refresh on demand.
 
-> 42 jobs imported · 7 skipped because required fields were missing.
+## Avoid
 
-### Packets view
-
-Packet rows/cards should show:
-
-- company + job title
-- packet path
-- packet status
-- created/updated time
-- task file hints
-- actions:
-  - `Open Packet`
-  - `Reveal in Finder`
-  - `Open tailor_resume.md`
-  - `Open verification_report.md`
-
-Existing packet copy:
-
-> Packet already exists. Open it instead?
-
-Actions:
-
-- `Open Existing`
-- `Write .new task files`
-- `Cancel`
-
-### Files view/editor
-
-Editor requirements:
-
-- Breadcrumb path.
-- Dirty-state indicator.
-- `Save` button.
-- `Cmd+S` support.
-- Monospace text area/editor for JSON/Markdown/LaTeX initially.
-
-Read-only binary/PDF banner:
-
-> Preview/editing is not supported for this file type yet. Reveal in Finder instead.
-
-### Right chat panel
-
-The right panel is a real local chat interface, but milestone 1 has no model execution.
-
-Empty state copy:
-
-> Project Chat  
-> Draft instructions, notes, and task prompts for this project.  
-> Model execution is not connected yet. Use this panel to compose task files for Codex/opencode or future providers.
-
-Required elements:
-
-- Message list.
-- Composer input.
-- Context chips:
-  - current file
-  - selected job
-  - selected packet
-- Actions:
-  - `Save message`
-  - `Create task file`
-  - `Append to current task`
-
-Do not use fake typing indicators or animated assistant behavior before model execution exists.
-
----
-
-## Motion and interaction
-
-Keep motion subtle and native-feeling.
-
-Use:
-
-- Quick fades for panel/content changes.
-- Slight background shift on hover.
-- Gentle scale or opacity for active pills/buttons.
-- Toasts for save/import/packet success.
-
-Avoid:
-
-- Bouncy animations.
-- Large page transitions.
-- Constant glowing effects.
-- AI “thinking” animations before real execution exists.
-
-Suggested timings:
-
-- Hover: `120–160ms`
-- Panel/content fade: `160–220ms`
-- Toast entrance: `180–240ms`
-
----
-
-## Interaction states
-
-Every primary view should handle these states deliberately:
-
-- no project
-- loading project
-- empty source/job/packet states
-- missing actor name
-- malformed JSON import
-- partial import success
-- permission denied
-- unsaved editor changes
-- save success/failure
-- binary/PDF read-only
-- packet already exists
-- chat local-only empty state
-- chat save failure
-- narrow-window collapsed panels
-
-Error states should include a recovery action, not only an error message.
-
----
-
-## Accessibility
-
-Minimum requirements:
-
-- Visible focus rings on all interactive controls.
-- Keyboard navigation for mode nav, file tree, and job list.
-- `Cmd+S` saves active file.
-- Chat composer has an accessible label.
-- Buttons use clear labels, not icon-only controls unless labelled.
-- Job statuses do not rely on color alone.
-- Text contrast must remain readable on dark surfaces.
-- Destructive actions require confirmation or undo.
-
-Focus ring direction:
-
-```css
-:focus-visible {
-  outline: 2px solid var(--dtg-focus);
-  outline-offset: 2px;
-}
-```
-
----
-
-## Trust and safety copy
-
-Use subtle trust cues in setup, settings, and relevant empty states.
-
-Recommended copy snippets:
-
-- `Local-first: project files stay under ~/.dropthegrind/workspace.`
-- `Human-reviewed: Drop the Grind prepares packets; it does not auto-apply.`
-- `Resume-grounded: generated tasks should tailor from your existing resume, not invent experience.`
-- `MCP-assisted: Apify MCP tasks are run externally in milestone 1; import outputs back into the app.`
-
----
-
-## Implementation notes
-
-Suggested shadcn/ui primitives:
-
-- `ResizablePanelGroup`
-- `ScrollArea`
-- `Tabs` or segmented controls
-- `Card`
-- `Badge`
-- `Button`
-- `Dialog`
-- `Toast`
-- `Alert`
-
-Use Tailwind tokens or CSS variables to preserve a consistent dark material system.
-
-The first implementation can be simple, but screenshots should already communicate:
-
-1. This is a serious macOS desktop app.
-2. The job workflow is first-class.
-3. Files are transparent and local.
-4. AI/model execution is intentionally not faked.
+- raw API JSON in user-facing Markdown
+- one huge file for all job details
+- warm/brown chat boxes
+- playful/illustration-heavy design
+- generic SaaS homepage styling
+- silent long-running Start Hunting operations
+- agent chat being used as the Start Hunting execution trigger

@@ -1,0 +1,24 @@
+[
+  {
+    "jobTitle": "Frontend Engineer",
+    "companyName": "Acme AI",
+    "location": "Remote US",
+    "remote": true,
+    "salaryRange": "$130k-$170k",
+    "jobDescription": "Build polished React interfaces for AI workflow tools.",
+    "jobUrl": "https://example.com/jobs/frontend-engineer"
+  },
+  {
+    "title": "Rust Tauri Engineer",
+    "company": "LocalFirst Labs",
+    "location": "San Francisco, CA",
+    "workplaceType": "hybrid",
+    "description": "Own desktop app integrations with Rust, Tauri, and SQLite.",
+    "applyUrl": "https://example.com/jobs/rust-tauri",
+    "sourceUrl": "https://example.com/jobs/rust-tauri"
+  },
+  {
+    "company": "Missing Title Inc",
+    "url": "https://example.com/jobs/bad-row"
+  }
+]

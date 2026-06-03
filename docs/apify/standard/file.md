@@ -1,0 +1,6 @@
+- https://apify.com/fantastic-jobs/career-site-job-listing-api (54 Sites)
+- https://apify.com/misceres/indeed-scraper (Indeed)
+- https://apify.com/fantastic-jobs/advanced-linkedin-job-search-api (LinkedIn)
+- https://apify.com/crawlerbros/wellfound-scraper/reviews (Wellfound)
+- https://apify.com/memo23/y-combinator-scraper (YC Startup Jobs)
+- https://apify.com/shahidirfan/jungle-job-scraper/reviews (Welcome to the Jungle)

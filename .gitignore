@@ -4,3 +4,12 @@ src-tauri/target/
 .DS_Store
 .env
 .env.*
+
+# Pi local state
+.pi/
+
+# Local convenience scripts
+build.sh
+
+# Tauri generated schemas
+src-tauri/gen/
