@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::{collections::{HashMap, hash_map::DefaultHasher}, fs, hash::{Hash, Hasher}, io::{BufRead, BufReader, Write}, path::{Path, PathBuf}, process::{Command, Stdio}, sync::{mpsc, Mutex}, thread, time::Duration};
 use tauri::{ipc::Channel, AppHandle, Emitter, State};
 
+mod resume;
+
 const APP_DIR: &str = ".dropthegrind";
 const WORKSPACE_DIR: &str = "workspace";
 
@@ -227,7 +229,7 @@ fn ensure_inside_workspace(path: &Path) -> Result<(), String> {
     let candidate = if path.exists() { fs::canonicalize(path).map_err(|e| e.to_string())? } else { let parent = path.parent().ok_or("Path has no parent")?; fs::canonicalize(parent).map_err(|e| e.to_string())?.join(path.file_name().ok_or("Path has no filename")?) };
     if candidate.starts_with(&root_canon) { Ok(()) } else { Err("Path escapes Drop the Grind workspace".into()) }
 }
-fn project_root(project_slug: &str) -> Result<PathBuf, String> { if project_slug.contains("..") || project_slug.contains('/') || project_slug.contains('\\') { return Err("Invalid project slug".into()); } let path=workspace_root()?.join(project_slug); ensure_inside_workspace(&path)?; Ok(path) }
+pub(crate) fn project_root(project_slug: &str) -> Result<PathBuf, String> { if project_slug.contains("..") || project_slug.contains('/') || project_slug.contains('\\') { return Err("Invalid project slug".into()); } let path=workspace_root()?.join(project_slug); ensure_inside_workspace(&path)?; Ok(path) }
 fn safe_project_path(project_slug: &str, rel_path: &str) -> Result<PathBuf, String> { if rel_path.contains("..") || Path::new(rel_path).is_absolute() { return Err("Unsafe path".into()); } let path=project_root(project_slug)?.join(rel_path); ensure_inside_workspace(&path)?; Ok(path) }
 fn is_text_editable(path: &Path) -> bool { matches!(path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase().as_str(), "md"|"json"|"txt"|"tex"|"toml"|"yaml"|"yml") }
 fn write_if_missing(path: &Path, content: &str) -> Result<(), String> { if !path.exists() { fs::write(path, content).map_err(|e| e.to_string())?; } Ok(()) }
@@ -1361,8 +1363,14 @@ fn resolve_workspace_path(project_root: &std::path::Path, path_str: &str) -> Res
 fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
     let root = project_root(&input.project_slug)?;
     let run_id = input.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/resume_current.*, resources/, jobs/, applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create.\n\nUser message:\n{}", input.prompt);
+    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/resume_current.*, resources/, jobs/, applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create.\n\n## Available commands\n{}\n\nUser message:\n{}", resume::skill_registry_prompt(), input.prompt);
     if let Some(p) = input.linked_file_path { prompt.push_str(&format!("\n\nCurrently selected file: {}", p)); }
+
+    // Inject skill instructions if the user's message matches a skill keyword
+    if let Some(skill) = resume::matching_skill(&input.prompt) {
+        let instructions = resume::skill_instructions(skill.name).unwrap_or("");
+        prompt = format!("{}\n\n---\n### {}\n{}\n\n---\nUser message:\n{}", prompt, skill.name, instructions, input.prompt);
+    }
     let model = input.model.unwrap_or_else(|| "gpt-5.5".into());
     let effort = input.effort.unwrap_or_else(|| "low".into());
     let root_str = root.to_str().ok_or("Invalid project path")?.to_string();
@@ -1660,7 +1668,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
+pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url,resume::validate_resume,resume::convert_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
 mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} }
