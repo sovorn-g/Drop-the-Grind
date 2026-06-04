@@ -154,6 +154,75 @@ pub struct HuntRunOutput { pub folder_path: String, pub results_path: String }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct HuntConfig {
+    pub name: String,
+    pub slug: String,
+    pub created: String,
+    pub last_run: Option<String>,
+    pub roles: Vec<String>,
+    pub location: String,
+    pub work_mode: String,
+    pub seniority: String,
+    pub experience: String,
+    pub min_salary: String,
+    pub include_keywords: String,
+    pub exclude_keywords: String,
+    pub posted_within: String,
+    pub selected_sites: Vec<String>,
+    pub max_items: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HuntRunEntry {
+    pub date: String,
+    pub new_jobs: usize,
+    pub filtered: usize,
+    pub duplicates: usize,
+    pub sources_failed: Vec<String>,
+    pub run_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HuntJobEntry {
+    pub title: String,
+    pub company: String,
+    pub apply_url: String,
+    pub source_name: String,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub file_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HuntResultDB {
+    pub runs: Vec<HuntRunEntry>,
+    pub jobs: HashMap<String, HuntJobEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HuntProfileSummary {
+    pub name: String,
+    pub slug: String,
+    pub job_count: usize,
+    pub run_count: usize,
+    pub last_run: Option<String>,
+    pub created: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveHuntConfigInput {
+    pub project_slug: String,
+    pub hunt_slug: String,
+    pub config: HuntConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct SourceConfig { pub id: String, pub project_slug: String, pub name: String, pub actor_name: String, pub mcp_server_url: String, pub input_template_json: String, pub updated_at: String }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -510,6 +579,59 @@ fn actor_slug_for_site(site: &str) -> &'static str {
 }
 
 #[tauri::command]
+fn list_hunt_profiles(project_slug: String) -> Result<Vec<HuntProfileSummary>, String> {
+    let root = project_root(&project_slug)?;
+    let hunt_run_dir = root.join("hunt_run");
+    if !hunt_run_dir.exists() { return Ok(vec![]); }
+    if let Ok(mut entries) = fs::read_dir(&hunt_run_dir) {
+        while let Some(Ok(entry)) = entries.next() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                let _ = migrate_old_hunt_format(&entry.path());
+            }
+        }
+    }
+    let mut profiles = vec![];
+    for entry in fs::read_dir(&hunt_run_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let config_path = entry.path().join(".hunt_config.json");
+        let result_path = entry.path().join(".hunt_result.json");
+        let config: HuntConfig = if config_path.exists() {
+            serde_json::from_str(&fs::read_to_string(&config_path).map_err(|e| e.to_string())?).map_err(|e| format!("Malformed .hunt_config.json in {name}: {e}"))?
+        } else {
+            continue;
+        };
+        let result: HuntResultDB = if result_path.exists() {
+            serde_json::from_str(&fs::read_to_string(&result_path).map_err(|e| e.to_string())?).map_err(|e| format!("Malformed .hunt_result.json in {name}: {e}"))?
+        } else {
+            HuntResultDB { runs: vec![], jobs: HashMap::new() }
+        };
+        profiles.push(HuntProfileSummary {
+            name: config.name.clone(),
+            slug: config.slug.clone(),
+            job_count: result.jobs.len(),
+            run_count: result.runs.len(),
+            last_run: config.last_run.clone(),
+            created: config.created.clone(),
+        });
+    }
+    Ok(profiles)
+}
+
+#[tauri::command]
+fn save_hunt_config(input: SaveHuntConfigInput) -> Result<(), String> {
+    let root = project_root(&input.project_slug)?;
+    let config_path = root.join("hunt_run").join(&input.hunt_slug).join(".hunt_config.json");
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&input.config).map_err(|e| e.to_string())?;
+    fs::write(&config_path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn create_hunt_run(input: HuntRunInput) -> Result<HuntRunOutput, String> {
     let root = project_root(&input.project_slug)?;
     let slug = slugify(&input.name);
@@ -517,16 +639,71 @@ fn create_hunt_run(input: HuntRunInput) -> Result<HuntRunOutput, String> {
     fs::create_dir_all(root.join("hunt_run")).map_err(|e| e.to_string())?;
     let rel_folder = format!("hunt_run/{slug}");
     let folder = safe_project_path(&input.project_slug, &rel_folder)?;
+    let config_path = folder.join(".hunt_config.json");
+    let results_rel = format!("{rel_folder}/results.md");
+    if config_path.exists() {
+        return Ok(HuntRunOutput { folder_path: rel_folder.clone(), results_path: results_rel });
+    }
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-    let created = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-    let roles_md = input.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("\n");
-    let actor_lines = input.selected_sites.iter().map(|s| format!("- {} → `{}`", s, actor_slug_for_site(s))).collect::<Vec<_>>().join("\n");
-    let results = format!("# Hunt Results\n\nRun: {}\nCreated: {}\nGenerated: pending\n\n## Hunt Settings\n\n- Mode: {}\n- Max scrape results: {}\n- Location: {}\n- Posted within: {}\n- Seniority: {}\n- Experience: {}\n- Minimum salary: {}\n- Include keywords: {}\n- Avoid keywords: {}\n\n### Roles\n\n{}\n\n### Apify Actors\n\n{}\n\n## Status\n\nThis hunt run has been created. Drop the Grind will use the direct Apify Actor API to write a summary/index here and one focused Markdown file per job under `jobs/`.\n\n## Summary\n\n- Raw jobs found: pending\n- Jobs included: pending\n- Sources failed: pending\n\n## Jobs\n\nJob links will appear here when the run completes.\n\n", input.name, created, input.work_mode, input.max_items, input.location, input.posted_within, input.seniority, input.experience, input.min_salary, input.include_keywords, input.exclude_keywords, if roles_md.is_empty(){"- Not specified"}else{&roles_md}, if actor_lines.is_empty(){"- None"}else{&actor_lines});
+    let now_ts = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let config = HuntConfig {
+        name: input.name.clone(),
+        slug: slug.clone(),
+        created: now_ts.clone(),
+        last_run: None,
+        roles: input.roles.clone(),
+        location: input.location.clone(),
+        work_mode: input.work_mode.clone(),
+        seniority: input.seniority.clone(),
+        experience: input.experience.clone(),
+        min_salary: input.min_salary.clone(),
+        include_keywords: input.include_keywords.clone(),
+        exclude_keywords: input.exclude_keywords.clone(),
+        posted_within: input.posted_within.clone(),
+        selected_sites: input.selected_sites.clone(),
+        max_items: input.max_items,
+    };
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    fs::write(&config_path, json).map_err(|e| e.to_string())?;
+    let empty_db = HuntResultDB { runs: vec![], jobs: HashMap::new() };
+    fs::write(folder.join(".hunt_result.json"), serde_json::to_string_pretty(&empty_db).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let roles_md = input.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("
+");
+    let actor_lines = input.selected_sites.iter().map(|s| format!("- {} -> `{}`", s, actor_slug_for_site(s))).collect::<Vec<_>>().join("
+");
+    let results = format!("# Hunt Results
+
+Run: {}
+Created: {}
+
+## Hunt Settings
+
+- Mode: {}
+- Max scrape results: {}
+- Location: {}
+- Posted within: {}
+- Seniority: {}
+- Experience: {}
+- Minimum salary: {}
+- Include keywords: {}
+- Avoid keywords: {}
+
+### Roles
+
+{}
+
+### Apify Actors
+
+{}
+
+## Status
+
+This hunt run has been created. Results will appear in date-stamped `jobs-YYYY-MM-DD/` folders after each run.
+
+", input.name, now_ts, input.work_mode, input.max_items, input.location, input.posted_within, input.seniority, input.experience, input.min_salary, input.include_keywords, input.exclude_keywords, if roles_md.is_empty(){"- Not specified"}else{&roles_md}, if actor_lines.is_empty(){"- None"}else{&actor_lines});
     fs::write(folder.join("results.md"), results).map_err(|e| e.to_string())?;
-    Ok(HuntRunOutput{folder_path: rel_folder.clone(), results_path: format!("{rel_folder}/results.md")})
+    Ok(HuntRunOutput { folder_path: rel_folder.clone(), results_path: results_rel })
 }
-
-
 fn emit_event(ch: &Channel<AgentRunEvent>, run_id: &str, kind: &str, text: impl Into<String>) {
     let _ = ch.send(AgentRunEvent{run_id: run_id.to_string(), kind: kind.to_string(), text: text.into()});
 }
@@ -673,6 +850,21 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
     thread::spawn(move || {
         emit_event(&on_event, &run_id, "started", "Starting Apify Actor API hunt");
         let results_path = match safe_project_path(&input.hunt.project_slug, &input.results_path) { Ok(p) => p, Err(e) => { emit_event(&on_event, &run_id, "failed", e); return; } };
+        let hunt_folder = match results_path.parent() { Some(p) => p.to_path_buf(), None => { emit_event(&on_event, &run_id, "failed", "Could not resolve hunt directory"); return; } };
+        // Migrate old-format jobs/ if present
+        let _ = migrate_old_hunt_format(&hunt_folder);
+        // Read existing result DB to build seen set
+        let result_db_path = hunt_folder.join(".hunt_result.json");
+        let mut result_db: HuntResultDB = if result_db_path.exists() {
+            match serde_json::from_str(&fs::read_to_string(&result_db_path).unwrap_or_default()) {
+                Ok(db) => db,
+                Err(_) => HuntResultDB { runs: vec![], jobs: HashMap::new() }
+            }
+        } else {
+            HuntResultDB { runs: vec![], jobs: HashMap::new() }
+        };
+        let before_count = result_db.jobs.len();
+        // Run actors
         let mut all = Vec::<(String, Value)>::new();
         let mut failures = Vec::<String>::new();
         for site in &input.hunt.selected_sites {
@@ -684,40 +876,107 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
             }
         }
         let raw_found = all.len();
-        let mut seen = std::collections::HashSet::new();
-        let mut jobs = Vec::new();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let mut new_jobs = Vec::<(String, HuntJob)>::new();
         let mut filtered = 0usize;
-        let mut duplicate = 0usize;
+        let mut intra_duplicate = 0usize;
+        let mut already_seen = 0usize;
         for (source, item) in all {
             let norm = normalize_hunt_job(&source, &item);
             if post_filter_reason(&input.hunt, &norm).is_some() { filtered += 1; continue; }
-            let key = format!("{}:{}:{}", norm.title.to_lowercase(), norm.company.to_lowercase(), norm.apply_url.to_lowercase());
-            if seen.insert(key) { jobs.push((source, norm)); } else { duplicate += 1; }
-            if jobs.len() >= input.hunt.max_items { break; }
+            let dedup_key = hunt_job_dedup_key(&norm);
+            if result_db.jobs.contains_key(&dedup_key) { already_seen += 1; continue; }
+            if new_jobs.iter().any(|(_, j)| hunt_job_dedup_key(j) == dedup_key) { intra_duplicate += 1; continue; }
+            new_jobs.push((source, norm));
+            if new_jobs.len() >= input.hunt.max_items { break; }
         }
-        emit_event(&on_event, &run_id, "status", format!("Filtered {filtered} jobs and removed {duplicate} duplicates"));
-        let generated = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let jobs_dir = match results_path.parent() { Some(parent) => parent.join("jobs"), None => { emit_event(&on_event, &run_id, "failed", "Could not resolve hunt jobs directory"); return; } };
-        if jobs_dir.exists() { let _ = fs::remove_dir_all(&jobs_dir); }
-        if let Err(e) = fs::create_dir_all(&jobs_dir) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
+        emit_event(&on_event, &run_id, "status", format!("Filtered {filtered}, already seen {already_seen}, intra-run duplicates {intra_duplicate}"));
+        // Write new jobs to date-stamped folder
+        let job_dir_name = format!("jobs-{today}");
+        let jobs_dir = hunt_folder.join(&job_dir_name);
+        if !new_jobs.is_empty() {
+            if let Err(e) = fs::create_dir_all(&jobs_dir) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
+        }
         let mut job_links = Vec::<(String, HuntJob)>::new();
-        for (i, (_, norm)) in jobs.iter().enumerate() {
+        for (i, (source, norm)) in new_jobs.iter().enumerate() {
             let file_name = job_file_name(i+1, norm);
             let detail_path = jobs_dir.join(&file_name);
             if let Err(e) = fs::write(&detail_path, job_detail_markdown(i+1, norm)) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
-            job_links.push((format!("jobs/{file_name}"), norm.clone()));
+            // Add to result DB
+            let key = hunt_job_dedup_key(norm);
+            result_db.jobs.insert(key, HuntJobEntry {
+                title: norm.title.clone(),
+                company: norm.company.clone(),
+                apply_url: norm.apply_url.clone(),
+                source_name: norm.source_name.clone(),
+                first_seen: today.clone(),
+                last_seen: today.clone(),
+                file_path: format!("{job_dir_name}/{file_name}"),
+            });
+            job_links.push((format!("{job_dir_name}/{file_name}"), norm.clone()));
         }
+        // Add run entry
+        let now_ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        result_db.runs.push(HuntRunEntry {
+            date: today.clone(),
+            new_jobs: new_jobs.len(),
+            filtered,
+            duplicates: already_seen + intra_duplicate,
+            sources_failed: failures.clone(),
+            run_at: now_ts,
+        });
+        // Update last_run in config
+        let config_path = hunt_folder.join(".hunt_config.json");
+        if config_path.exists() {
+            if let Ok(mut config) = serde_json::from_str::<HuntConfig>(&fs::read_to_string(&config_path).unwrap_or_default()) {
+                config.last_run = Some(today.clone());
+                if let Ok(json) = serde_json::to_string_pretty(&config) {
+                    let _ = fs::write(&config_path, json);
+                }
+            }
+        }
+        // Write updated .hunt_result.json
+        if let Ok(db_json) = serde_json::to_string_pretty(&result_db) {
+            if let Err(e) = fs::write(&result_db_path, db_json) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
+        }
+        // Regenerate results.md from the full DB
+        let new_count = result_db.jobs.len() - before_count;
+        let total_jobs = result_db.jobs.len();
+        let total_runs = result_db.runs.len();
         let roles_md = input.hunt.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("\n");
-        let mut md = format!("# Hunt Results\n\nRun: {}\nMode: {}\nSources: {}\nGenerated: {}\n\n## Hunt Settings\n\n- Max scrape results: {}\n- Location: {}\n- Posted within: {}\n- Seniority: {}\n- Experience: {}\n- Minimum salary: {}\n- Include keywords: {}\n- Avoid keywords: {}\n\n### Roles\n\n{}\n\n## Summary\n\n- Raw jobs found: {}\n- Jobs included: {}\n- Jobs filtered out: {}\n- Duplicates removed: {}\n- Sources failed: {}\n\n", input.hunt.name, input.hunt.work_mode, input.hunt.selected_sites.join(", "), generated, input.hunt.max_items, input.hunt.location, input.hunt.posted_within, input.hunt.seniority, input.hunt.experience, input.hunt.min_salary, input.hunt.include_keywords, input.hunt.exclude_keywords, if roles_md.is_empty(){"- Not specified"}else{&roles_md}, raw_found, jobs.len(), filtered, duplicate, failures.len());
+        let mut md = format!("# Hunt Results\n\nRun: {}\nMode: {}\nSources: {}\nTotal runs: {}\nTotal distinct jobs: {}\nLast refreshed: {}\n\n## Hunt Settings\n\n- Max scrape results: {}\n- Location: {}\n- Posted within: {}\n- Seniority: {}\n- Experience: {}\n- Minimum salary: {}\n- Include keywords: {}\n- Avoid keywords: {}\n\n### Roles\n\n{}\n\n",
+            input.hunt.name, input.hunt.work_mode, input.hunt.selected_sites.join(", "), total_runs, total_jobs, today,
+            input.hunt.max_items, input.hunt.location, input.hunt.posted_within, input.hunt.seniority, input.hunt.experience, input.hunt.min_salary, input.hunt.include_keywords, input.hunt.exclude_keywords,
+            if roles_md.is_empty(){"- Not specified".to_string()}else{roles_md});
         if !failures.is_empty() { md.push_str("## Source Failures\n\n"); for f in &failures { md.push_str(&format!("- {f}\n")); } md.push('\n'); }
-        md.push_str("## Jobs\n\nOpen an individual job file when tailoring a resume or writing outreach. Do not load every job into the agent at once.\n\n");
-        for (i, (rel, norm)) in job_links.iter().enumerate() { md.push_str(&job_index_markdown(i+1, rel, norm)); }
+        // Per-run sections
+        for (ri, run) in result_db.runs.iter().enumerate() {
+            let label = if ri == result_db.runs.len() - 1 && new_count > 0 { "Latest Run".to_string() } else { format!("Run {}", ri + 1) };
+            let new_info = if ri == result_db.runs.len() - 1 && new_count > 0 { format!(" ({} new)", new_count) } else { String::new() };
+            md.push_str(&format!("## {} --- {}{}\n\n", label, run.date, new_info));
+            if !run.sources_failed.is_empty() {
+                for sf in &run.sources_failed { md.push_str(&format!("- Source failed: {sf}\n")); }
+            }
+            md.push_str(&format!("- Jobs found: {}\n", run.new_jobs + run.filtered + run.duplicates));
+            md.push_str(&format!("- New: {} . Filtered: {} . Duplicates: {}\n\n", run.new_jobs, run.filtered, run.duplicates));
+        }
+        // Build master job index from all runs
+        md.push_str("## All Jobs\n\n");
+        let mut all_job_entries: Vec<(&String, &HuntJobEntry)> = result_db.jobs.iter().collect();
+        all_job_entries.sort_by(|(_, a), (_, b)| b.last_seen.cmp(&a.last_seen).then_with(|| a.title.cmp(&b.title)));
+        for (i, (_, entry)) in all_job_entries.iter().enumerate() {
+            let mut meta_parts = Vec::new();
+            if !entry.source_name.is_empty() { meta_parts.push(format!("Source: {}", entry.source_name)); }
+            meta_parts.push(format!("First seen: {}", entry.first_seen));
+            let meta_str = meta_parts.join(" . ");
+            md.push_str(&format!("{}. [{} --- {}]({})\n   - {}\n", i+1, entry.title, entry.company, entry.file_path, meta_str));
+        }
         if let Err(e) = fs::write(&results_path, md) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
-        emit_event(&on_event, &run_id, "completed", format!("Hunt complete. Wrote {} jobs to results.md", jobs.len()));
+        let summary = if new_count == 0 { "No new jobs found --- all up to date.".to_string() } else { format!("Hunt complete. Added {} new job{} to {}/", new_count, if new_count == 1 { "" } else { "s" }, job_dir_name) };
+        emit_event(&on_event, &run_id, "completed", summary);
     });
     Ok(return_run_id)
 }
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HuntJob {
@@ -1130,9 +1389,123 @@ fn post_filter_reason(h: &HuntRunInput, j: &HuntJob) -> Option<String> {
     None
 }
 
+
+fn migrate_old_hunt_format(hunt_dir: &Path) -> Result<(), String> {
+    let old_jobs_dir = hunt_dir.join("jobs");
+    if !old_jobs_dir.exists() { return Ok(()); }
+    let has_date_jobs = fs::read_dir(hunt_dir)
+        .map_err(|e| e.to_string())?
+        .any(|e| e.ok().map_or(false, |e| {
+            e.file_name().to_string_lossy().starts_with("jobs-")
+        }));
+    if has_date_jobs { return Ok(()); }
+    let date = if let Ok(config) = serde_json::from_str::<HuntConfig>(&fs::read_to_string(hunt_dir.join(".hunt_config.json")).unwrap_or_default()) {
+        config.created.chars().take(10).collect::<String>()
+    } else {
+        let mtime = old_jobs_dir.metadata().ok().and_then(|m| m.modified().ok())
+            .and_then(|t| Some(chrono::DateTime::<chrono::Utc>::from(t).format("%Y-%m-%d").to_string()))
+            .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+        mtime
+    };
+    let new_name = format!("jobs-{date}");
+    let new_jobs_dir = hunt_dir.join(&new_name);
+    if new_jobs_dir.exists() {
+        fs::remove_dir_all(&old_jobs_dir).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    fs::rename(&old_jobs_dir, &new_jobs_dir).map_err(|e| e.to_string())?;
+    let result_db_path = hunt_dir.join(".hunt_result.json");
+    let mut result_db: HuntResultDB = if result_db_path.exists() {
+        serde_json::from_str(&fs::read_to_string(&result_db_path).unwrap_or_default()).unwrap_or(HuntResultDB { runs: vec![], jobs: HashMap::new() })
+    } else {
+        HuntResultDB { runs: vec![], jobs: HashMap::new() }
+    };
+    if result_db.jobs.is_empty() && new_jobs_dir.exists() {
+        let mut entries: Vec<_> = fs::read_dir(&new_jobs_dir).map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "md"))
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in &entries {
+            let path = entry.path();
+            if let Ok(content) = fs::read_to_string(&path) {
+                let title = content.lines().find(|l| l.starts_with("# ") && l.contains(" --- "))
+                    .and_then(|l| l.splitn(2, ' ').last())
+                    .and_then(|l| l.rsplitn(2, " --- ").last())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| entry.file_name().to_string_lossy().replace(".md", ""));
+                let company = content.lines().find(|l| l.starts_with("- Company: "))
+                    .and_then(|l| l.strip_prefix("- Company: "))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                let apply_url = content.lines().find(|l| l.starts_with("- Apply: "))
+                    .and_then(|l| l.strip_prefix("- Apply: "))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                let source_name = content.lines().find(|l| l.starts_with("- Source: "))
+                    .and_then(|l| l.strip_prefix("- Source: "))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                let file_path = format!("{new_name}/{}", entry.file_name().to_string_lossy());
+                let key = format!("{}:{}:{}:{}", title.to_lowercase(), company.to_lowercase(), apply_url.to_lowercase(), source_name.to_lowercase());
+                if !result_db.jobs.contains_key(&key) {
+                    result_db.jobs.insert(key, HuntJobEntry {
+                        title: title.clone(),
+                        company: company.clone(),
+                        apply_url: apply_url.clone(),
+                        source_name: source_name.clone(),
+                        first_seen: date.clone(),
+                        last_seen: date.clone(),
+                        file_path: file_path.clone(),
+                    });
+                }
+            }
+        }
+        if result_db.runs.is_empty() {
+            result_db.runs.push(HuntRunEntry {
+                date: date.clone(),
+                new_jobs: result_db.jobs.len(),
+                filtered: 0,
+                duplicates: 0,
+                sources_failed: vec![],
+                run_at: format!("{} 00:00:00", date),
+            });
+        }
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&result_db) {
+        let _ = fs::write(&result_db_path, json);
+    }
+    let config_path = hunt_dir.join(".hunt_config.json");
+    if !config_path.exists() {
+        let slug = hunt_dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let config = HuntConfig {
+            name: slug.clone(),
+            slug: slug.clone(),
+            created: format!("{} 00:00", date),
+            last_run: Some(date.clone()),
+            roles: vec![],
+            location: String::new(),
+            work_mode: String::new(),
+            seniority: String::new(),
+            experience: String::new(),
+            min_salary: String::new(),
+            include_keywords: String::new(),
+            exclude_keywords: String::new(),
+            posted_within: String::new(),
+            selected_sites: vec![],
+            max_items: 100,
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&config) {
+            let _ = fs::write(&config_path, json);
+        }
+    }
+    Ok(())
+}
+
 fn string_alias(v:&Value, keys:&[&str])->Option<String>{ for k in keys { if let Some(x)=v.get(*k) { if let Some(s)=x.as_str(){ if !s.trim().is_empty(){ return Some(s.trim().to_string()) } } else if !x.is_null() && (x.is_number() || x.is_boolean()) { return Some(x.to_string()) } } } None }
 fn array_items(raw: Value)->Vec<Value>{ if let Some(a)=raw.as_array(){ return a.clone(); } for k in ["items","data","datasetItems","results"] { if let Some(a)=raw.get(k).and_then(|v|v.as_array()){ return a.clone(); } } vec![raw] }
 fn dedupe_key(company:&str,title:&str,apply:&str,source:&str)->String{ format!("{}:{}:{}:{}",company.to_lowercase(),title.to_lowercase(),apply.to_lowercase(),source.to_lowercase()) }
+fn hunt_job_dedup_key(j: &HuntJob) -> String { format!("{}:{}:{}:{}", j.title.to_lowercase(), j.company.to_lowercase(), j.apply_url.to_lowercase(), j.source_name.to_lowercase()) }
 fn normalize_job(v:&Value)->Result<JobRecord,String>{ let title=string_alias(v,&["title","jobTitle","position","name"]).ok_or("missing title")?; let company=string_alias(v,&["company","companyName","employer","organization"]).ok_or("missing company")?; let apply_url=string_alias(v,&["applyUrl","applyURL","url","jobUrl","jobURL","link"]).ok_or("missing applyUrl/sourceUrl")?; let source_url=string_alias(v,&["sourceUrl","sourceURL","postingUrl","jobUrl","url","link"]).unwrap_or_else(||apply_url.clone()); let remote=string_alias(v,&["remoteType","remote","workplaceType"]).unwrap_or_else(||"unknown".into()).to_lowercase(); let remote_type=if remote.contains("hybrid"){"hybrid"}else if remote.contains("remote")||remote=="true"{"remote"}else if remote.contains("onsite")||remote.contains("office"){"onsite"}else{"unknown"}.to_string(); let key=dedupe_key(&company,&title,&apply_url,&source_url); Ok(JobRecord{id:short_hash(&key),title,company,location:string_alias(v,&["location","jobLocation","city"]),remote_type,description:string_alias(v,&["description","jobDescription","text","summary"]),salary_range:string_alias(v,&["salary","salaryRange","compensation"]),apply_url,source_url,source_type:"apify".into(),dedupe_key:key,status:"new".into(),created_at:now()}) }
 
 #[tauri::command]
@@ -1363,7 +1736,7 @@ fn resolve_workspace_path(project_root: &std::path::Path, path_str: &str) -> Res
 fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
     let root = project_root(&input.project_slug)?;
     let run_id = input.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/resume_current.*, resources/, jobs/, applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create.\n\n## Available commands\n{}\n\nUser message:\n{}", resume::skill_registry_prompt(), input.prompt);
+    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/resume_current.*, resources/, hunt_run/<name>/results.md (master job index), hunt_run/<name>/jobs-*/ (read-only scraped listings), applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create.\n\n## Available commands\n{}\n\nUser message:\n{}", resume::skill_registry_prompt(), input.prompt);
     if let Some(p) = input.linked_file_path { prompt.push_str(&format!("\n\nCurrently selected file: {}", p)); }
 
     // Inject skill instructions if the user's message matches a skill keyword
@@ -1668,7 +2041,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url,resume::validate_resume,resume::convert_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
+pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_hunt_profiles,save_hunt_config,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url,resume::validate_resume,resume::convert_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
 mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} }
