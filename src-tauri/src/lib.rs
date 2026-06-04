@@ -73,6 +73,10 @@ pub struct SaveChatInput { pub project_slug: String, pub session_id: Option<Stri
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ForkChatSessionInput { pub project_slug: String, pub source_session_id: String, pub up_to_message_id: String, pub title: Option<String> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentRespondInput { pub project_slug: String, pub prompt: String, pub linked_file_path: Option<String> }
 
 #[derive(Default)]
@@ -1198,6 +1202,25 @@ fn save_chat_message(input: SaveChatInput) -> Result<ChatMessage, String> {
     Ok(msg)
 }
 
+#[tauri::command]
+fn fork_chat_session(input: ForkChatSessionInput) -> Result<ChatSession, String> {
+    let c = conn()?;
+    let t = now();
+    let source_title = c.query_row("SELECT title FROM chat_sessions WHERE id=?1", params![input.source_session_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    let title = input.title.unwrap_or_else(|| format!("Fork: {}", source_title));
+    let session = ChatSession { id: uuid::Uuid::new_v4().to_string(), project_slug: input.project_slug.clone(), title, created_at: t.clone(), updated_at: t.clone() };
+    c.execute("INSERT INTO chat_sessions(id,project_slug,title,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)", params![session.id, session.project_slug, session.title, session.created_at, session.updated_at]).map_err(|e| e.to_string())?;
+    let mut stmt = c.prepare("SELECT id,role,content,linked_file_path,linked_job_id,created_at FROM chat_messages WHERE session_id=?1 AND created_at<=(SELECT created_at FROM chat_messages WHERE id=?2) ORDER BY created_at").map_err(|e| e.to_string())?;
+    let messages = stmt.query_map(params![input.source_session_id, input.up_to_message_id], |r| Ok(ChatMessage{id:uuid::Uuid::new_v4().to_string(),role:r.get(1)?,content:r.get(2)?,linked_file_path:r.get(3)?,linked_job_id:r.get(4)?,created_at:r.get(5)?})).map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
+    let mut latest_ts = t.clone();
+    for msg in &messages {
+        c.execute("INSERT INTO chat_messages(id,session_id,role,content,linked_file_path,linked_job_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![msg.id, session.id, msg.role, msg.content, msg.linked_file_path, msg.linked_job_id, msg.created_at]).map_err(|e| e.to_string())?;
+        latest_ts = msg.created_at.clone();
+    }
+    c.execute("UPDATE chat_sessions SET updated_at=?1 WHERE id=?2", params![latest_ts, session.id]).map_err(|e| e.to_string())?;
+    Ok(session)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RenameChatSessionInput { session_id: String, title: String }
 
@@ -1637,7 +1660,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
+pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
 mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} }
