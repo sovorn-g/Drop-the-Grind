@@ -234,6 +234,15 @@ fn create_project(name: String) -> Result<Project, String> {
     let root=workspace_root()?.join(&slug); fs::create_dir_all(&root).map_err(|e| e.to_string())?; ensure_inside_workspace(&root)?;
     let created_at=now(); let project=Project{id:uuid::Uuid::new_v4().to_string(),name,slug:slug.clone(),root_path:root.to_string_lossy().to_string(),created_at:created_at.clone()};
     write_if_missing(&root.join("project.json"), &serde_json::to_string_pretty(&serde_json::json!({"id":project.id,"name":project.name,"slug":project.slug,"schemaVersion":3,"createdAt":created_at,"workspace":"minimal","generatedFolders":"created on demand"})).unwrap())?;
+    let profile_root=root.join("profile"); fs::create_dir_all(&profile_root).map_err(|e| e.to_string())?;
+    write_if_missing(&root.join("INSTRUCTION.md"), &[
+        "# Project Workspace Guide","","This project contains the following files and folders:","","| File / Folder | Purpose |","|---|---|","| `profile/RESUME_TEMPLATE.md` | Structured template with [placeholder] sections for your resume |","| `profile/RESUME.md` | Your working resume (starts as a sample) |","| `profile/USER.md` | Open-ended personal context — add your background, goals, preferences |","| `hunt_run/` | Job hunt results, created when you run Start Hunting |","","You can edit these Markdown files directly in the Editor. The agent can read them to tailor resumes, cover letters, and outreach messages.","","For more details, see `AGENTS.md` in the project root.",""].join("\n"))?;
+    write_if_missing(&profile_root.join("RESUME_TEMPLATE.md"), &[
+        "# Resume Template","","## Summary","[Brief professional summary — 2-3 sentences covering your role, key skills, and career goals.]","","## Skills","","### Languages","[e.g., Python, TypeScript, Rust, SQL]","","### ML / Data","[e.g., PyTorch, TensorFlow, scikit-learn, pandas]","","### Cloud / Infrastructure","[e.g., AWS, GCP, Docker, Kubernetes, Terraform]","","### Tools / Frameworks","[e.g., React, Git, CI/CD]","","## Experience","","### **[Company Name]** — *[Title]*","[Location] | [Start] – [End]","- [Achievement or responsibility]","- [Achievement or responsibility]","","## Projects / Research","","### **[Project Name]**","- [Description and key technologies used]","","## Education","","### **[University]** — *[Degree]*","[Year] – [Year] | [GPA if notable]","","## Optional Sections","","### Publications","- [Author(s), Title, Venue, Year]","","### Awards","- [Award name, Organization, Year]","","### Teaching / Mentorship","- [Course or role, Institution]","","### Certifications","- [Certification, Issuer, Year]","","### Work Authorization","[e.g., Authorized to work in the US, UK, etc.]",""].join("\n"))?;
+    write_if_missing(&profile_root.join("RESUME.md"), &[
+        "# Mitchell Bucklew","**Software Engineer | AI Researcher**","","## Summary","Experienced software engineer and AI researcher with a strong background in building production ML systems and scalable backend services. Proven track record at Intuit and American Express delivering high-impact features and leading technical initiatives. Passionate about bridging the gap between cutting-edge AI research and practical engineering.","","## Skills","","### Languages","Python, TypeScript, Java, C++, SQL, Rust","","### ML / Data","PyTorch, TensorFlow, scikit-learn, pandas, Kafka, Spark, Airflow","","### Cloud / Infrastructure","AWS (SageMaker, Lambda, S3, ECS), GCP, Docker, Kubernetes, Terraform, CI/CD","","### Tools / Frameworks","React, FastAPI, PostgreSQL, Redis, Git, Jira, Datadog","","## Experience","","### **Intuit** — *Senior Software Engineer*","Mountain View, CA | 2021 – Present","- Led the ML platform team designing and deploying real-time fraud detection models serving 50M+ users, reducing fraudulent transactions by 34%","- Architected a microservices-based data pipeline processing 10TB+ daily, enabling near-real-time feature engineering for ML training","- Drove migration from legacy monolith to event-driven architecture on AWS, reducing P95 latency by 60% and infrastructure costs by 25%","- Mentored 4 junior engineers through structured onboarding, code reviews, and pair programming sessions","","### **American Express** — *Software Engineer*","New York, NY | 2018 – 2021","- Developed and maintained high-throughput transaction processing systems handling $2B+ in daily volume","- Built a GraphQL API layer unifying customer data across 12 internal services, reducing frontend integration time by 70%","- Implemented automated canary deployment and rollback strategies, achieving 99.99% uptime for critical payment services","","### **Arizona State University** — *Teaching Assistant*","Tempe, AZ | 2016 – 2018","- Led recitation sections for Data Structures & Algorithms (150+ students), improving average exam scores by 12%","- Developed autograding infrastructure for Python assignments using Docker-based sandboxing","- Held weekly office hours and created supplemental study materials for algorithm design","","## Projects / Research","","### **Neural Code Search**","- Built a transformer-based semantic code search engine for internal Intuit repos","- Fine-tuned CodeBERT on proprietary codebase achieving 0.87 MRR on held-out queries","- Deployed as a VS Code extension with sub-second inference latency","","### **Deep RL for Portfolio Optimization**","- Master's thesis: applied Proximal Policy Optimization to dynamic portfolio allocation","- Outperformed traditional Markowitz-based strategies by 18% in simulated backtests","- Published workshop paper at ICML 2024","","## Education","","### **Arizona State University** — *M.S. Computer Science*","2016 – 2018 | GPA: 3.9","Thesis: Neural Architectures for Efficient Code Search","","### **University of Michigan** — *B.S. Computer Science*","2012 – 2016 | GPA: 3.7","Minor in Mathematics | Dean's List 4 semesters","","## Awards","- Intuit Spotlight Award for ML Platform Excellence (2023)","- NSF Graduate Research Fellowship Honorable Mention (2017)","","## Certifications","- AWS Certified Solutions Architect — Professional (2022)","","## Work Authorization","Authorized to work in the United States",""].join("\n"))?;
+    write_if_missing(&profile_root.join("USER.md"), &[
+        "# Personal Context","","Use this file to describe your background, preferences, and any information that helps tailor your job hunt materials.","","## Background","[Briefly describe your professional background, industry, and career trajectory.]","","## Goals","- [What kind of role are you targeting?]","- [Preferred industries or company sizes]","- [Salary or location preferences]","","## Values & Preferences","- [What matters to you in a job? e.g., remote flexibility, mission-driven, growth opportunities]","- [Work style preferences, team culture, management style]","","## Other Notes","[Anything else the agent should know when tailoring resumes, cover letters, or outreach messages.]","","---","*You can add any sections beyond these starters — this is your personal file.*",""].join("\n"))?;
     let mut db=load_db()?; if !db.projects.iter().any(|p| p.slug==project.slug) { db.projects.push(project.clone()); save_db(&db)?; }
     Ok(project)
 }
@@ -1183,9 +1192,23 @@ fn save_chat_message(input: SaveChatInput) -> Result<ChatMessage, String> {
     c.execute("INSERT INTO chat_messages(id,session_id,role,content,linked_file_path,linked_job_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![msg.id, session_id, msg.role, msg.content, msg.linked_file_path, msg.linked_job_id, msg.created_at]).map_err(|e| e.to_string())?;
     c.execute("UPDATE chat_sessions SET updated_at=?1 WHERE id=?2", params![msg.created_at, session_id]).map_err(|e| e.to_string())?;
     let transcript = project_root(&input.project_slug)?.join("chats/project-chat.md");
+    if let Some(parent) = transcript.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
     let line = format!("\n\n## {} · {}\n\n{}\n", msg.role, msg.created_at, msg.content);
     use std::io::Write; fs::OpenOptions::new().create(true).append(true).open(transcript).and_then(|mut f| f.write_all(line.as_bytes())).map_err(|e| e.to_string())?;
     Ok(msg)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RenameChatSessionInput { session_id: String, title: String }
+
+#[tauri::command]
+fn rename_chat_session(input: RenameChatSessionInput) -> Result<ChatSession, String> {
+    let c = conn()?;
+    c.execute("UPDATE chat_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3", params![input.title, now(), input.session_id]).map_err(|e| e.to_string())?;
+    let s = c.query_row("SELECT id, project_slug, title, created_at, updated_at FROM chat_sessions WHERE id = ?1", params![input.session_id], |row| {
+        Ok(ChatSession { id: row.get(0)?, project_slug: row.get(1)?, title: row.get(2)?, created_at: row.get(3)?, updated_at: row.get(4)? })
+    }).map_err(|e| e.to_string())?;
+    Ok(s)
 }
 
 #[tauri::command]
@@ -1230,6 +1253,87 @@ fn agent_respond(input: AgentRespondInput) -> Result<String, String> {
     Ok(stdout)
 }
 
+fn search_tavily(query: &str) -> Result<String, String> {
+    let key = read_tavily_key()?.ok_or("Tavily API key not configured")?;
+    let body = serde_json::json!({"query": query, "search_depth": "advanced", "max_results": 6}).to_string();
+    let out = Command::new("curl")
+        .args(["-sS", "-X", "POST", "https://api.tavily.com/search", "-H", &format!("Authorization: Bearer {key}"), "-H", "Content-Type: application/json", "-d", &body])
+        .output().map_err(|e| format!("Tavily request failed: {e}"))?;
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() { return Err(format!("Tavily search failed: {text}")); }
+    let v: Value = serde_json::from_str(&text).map_err(|e| format!("Tavily response parse: {e}"))?;
+    let mut result = String::new();
+    if let Some(answer) = v["answer"].as_str() { result.push_str(&format!("Answer: {answer}\n\n")); }
+    if let Some(results) = v["results"].as_array() {
+        for (i, r) in results.iter().enumerate() {
+            let title = r["title"].as_str().unwrap_or("Untitled");
+            let url = r["url"].as_str().unwrap_or("");
+            let content = r["content"].as_str().unwrap_or("");
+            result.push_str(&format!("{}. {title}\n   {url}\n   {content}\n\n", i + 1));
+        }
+    }
+    if result.is_empty() { result = v["answer"].as_str().unwrap_or("No results found").into(); }
+    Ok(result)
+}
+
+fn execute_tool(tool_name: &str, args: &Value, project_root: &std::path::Path) -> Result<String, String> {
+    match tool_name {
+        "search_web" | "web_search" | "tavily_search" => {
+            let query = args["query"].as_str().or_else(|| args["q"].as_str()).ok_or("search_web requires a 'query' argument")?;
+            search_tavily(query)
+        }
+        "read_file" | "read" => {
+            let path_str = args["path"].as_str().or_else(|| args["file"].as_str()).ok_or("read_file requires a 'path' argument")?;
+            let resolved = resolve_workspace_path(project_root, path_str)?;
+            if !resolved.exists() { return Err(format!("File not found: {path_str}")); }
+            fs::read_to_string(&resolved).map_err(|e| format!("Read error: {e}"))
+        }
+        "write_file" | "write" => {
+            let path_str = args["path"].as_str().or_else(|| args["file"].as_str()).ok_or("write_file requires a 'path' argument")?;
+            let content = args["content"].as_str().or_else(|| args["text"].as_str()).ok_or("write_file requires 'content'")?;
+            let resolved = resolve_workspace_path(project_root, path_str)?;
+            if let Some(parent) = resolved.parent() { fs::create_dir_all(parent).map_err(|e| format!("Create dir: {e}"))?; }
+            fs::write(&resolved, content).map_err(|e| format!("Write error: {e}"))?;
+            Ok(format!("Wrote {} bytes to {path_str}", content.len()))
+        }
+        "run_command" | "shell" | "exec" => {
+            let cmd_str = args["command"].as_str().or_else(|| args["cmd"].as_str()).ok_or("run_command requires 'command'")?;
+            let cwd = args["cwd"].as_str().map(|s| s.to_string()).unwrap_or_else(|| project_root.to_string_lossy().to_string());
+            // Whitelist check — exact basename match
+            let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+            if parts.is_empty() { return Err("Empty command".into()); }
+            let basename = std::path::Path::new(parts[0])
+                .file_name().and_then(|s| s.to_str()).unwrap_or(parts[0]);
+            let allowed = ["pandoc", "pdflatex", "xelatex", "lualatex", "python3", "node", "git", "grep", "wc", "cat", "head", "tail", "ls", "echo", "sed", "awk", "tr", "sort", "uniq", "find"];
+            if !allowed.contains(&basename) { return Err(format!("Command not allowed: {basename}. Allowed: {}", allowed.join(", "))); }
+            let output = std::process::Command::new("sh")
+                .arg("-c").arg(cmd_str)
+                .current_dir(&cwd)
+                .output().map_err(|e| format!("Command error: {e}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let mut result = if stdout.is_empty() { String::new() } else { stdout };
+            if !stderr.is_empty() { result.push_str(&format!("\n[stderr]\n{stderr}")); }
+            if !output.status.success() { result.push_str(&format!("\n[exit code: {}]", output.status.code().unwrap_or(-1))); }
+            Ok(if result.is_empty() { "Command completed with no output".into() } else { result })
+        }
+        _ => Err(format!("Unknown tool: {tool_name}"))
+    }
+}
+
+fn resolve_workspace_path(project_root: &std::path::Path, path_str: &str) -> Result<std::path::PathBuf, String> {
+    let cleaned = path_str.trim_start_matches('/').trim_start_matches("./");
+    if cleaned.contains("..") { return Err("Path traversal not allowed".into()); }
+    let resolved = project_root.join(cleaned);
+    let canonical_root = project_root.canonicalize().map_err(|e| format!("Root resolve: {e}"))?;
+    match resolved.canonicalize() {
+        Ok(p) if p.starts_with(&canonical_root) => Ok(p),
+        Ok(_) => Err("Path escapes project workspace".into()),
+        Err(_) if resolved.parent().map_or(false, |p| p.starts_with(&canonical_root)) => Ok(resolved),
+        Err(_) => Err(format!("Invalid path: {path_str}"))
+    }
+}
+
 #[tauri::command]
 fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
     let root = project_root(&input.project_slug)?;
@@ -1266,7 +1370,7 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
             stdin.flush().map_err(|e| e.to_string())
         };
         let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"drop-the-grind","version":"0.1.0"},"capabilities":{"experimentalApi":true}}});
-        let thread_start = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"cwd":root_str,"model":model,"approvalPolicy":"never","sandbox":"workspace-write","ephemeral":true}});
+        let thread_start = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"cwd":root_str,"model":model,"approvalPolicy":"on-failure","sandbox":"workspace-write","ephemeral":true}});
         let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:"Waiting for app-server initialize response".into()});
         if let Err(e)=send(&mut stdin, init).and_then(|_| send(&mut stdin, thread_start)) { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:e}); return; }
         let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:"Waiting for thread/start response".into()});
@@ -1299,6 +1403,41 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
             let Ok(v): Result<Value,_> = serde_json::from_str(line.trim()) else { continue; };
             if v["id"] == 3 { if let Some(err)=v["error"]["message"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:err.into()}); return; } }
             let Some(method)=v["method"].as_str() else { continue; };
+            let mut handled_tool = false;
+            if method == "item/toolCall" || method == "item/toolUse" || method == "item/tool_call" || method == "item/tool_use" {
+                let Some(item) = v["params"]["item"].as_object() else { continue; };
+                let tool_call_id = item.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let tool_name = item.get("name").and_then(|x| x.as_str()).unwrap_or("unknown").to_string();
+                let args = item.get("arguments").unwrap_or(&Value::Null);
+                let target = args.get("path").or_else(|| args.get("file")).or_else(|| args.get("query")).or_else(|| args.get("command")).or_else(|| args.get("cmd")).and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or_else(|| tool_name.clone());
+                let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"tool-call".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"target":target,"status":"pending"}).to_string()});
+                let result = execute_tool(&tool_name, args, std::path::Path::new(&root_str));
+                let status = if result.is_ok() { "done" } else { "error" };
+                let preview = match &result { Ok(s) => s.chars().take(200).collect::<String>(), Err(e) => e.clone() };
+                let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"tool-result".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"status":status,"preview":preview}).to_string()});
+                let tool_result = serde_json::json!({"jsonrpc":"2.0","method":"tool/result","params":{"toolCallId":tool_call_id,"result":result.ok().unwrap_or_else(|| "Error".into())}});
+                if let Err(e) = send(&mut stdin, tool_result) { let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"stderr".into(),text:format!("Failed to send tool result: {e}")}); }
+                handled_tool = true;
+            }
+            if !handled_tool && method == "item/started" {
+                let item_type = v["params"]["item"]["type"].as_str().unwrap_or("");
+                let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Started {item_type}")});
+                if item_type == "tool_use" || item_type == "tool_call" || item_type == "toolUse" || item_type == "toolCall" {
+                    let item = &v["params"]["item"];
+                    let tool_call_id = item["id"].as_str().unwrap_or("").to_string();
+                    let tool_name = item["name"].as_str().unwrap_or("unknown").to_string();
+                    let args = &item["arguments"];
+                    let target = args.get("path").or_else(|| args.get("file")).or_else(|| args.get("query")).or_else(|| args.get("command")).or_else(|| args.get("cmd")).and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or_else(|| tool_name.clone());
+                    let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"tool-call".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"target":target,"status":"pending"}).to_string()});
+                    let result = execute_tool(&tool_name, args, std::path::Path::new(&root_str));
+                    let status = if result.is_ok() { "done" } else { "error" };
+                    let preview = match &result { Ok(s) => s.chars().take(200).collect::<String>(), Err(e) => e.clone() };
+                    let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"tool-result".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"status":status,"preview":preview}).to_string()});
+                    let tool_result = serde_json::json!({"jsonrpc":"2.0","method":"tool/result","params":{"toolCallId":tool_call_id,"result":result.ok().unwrap_or_else(|| "Error".into())}});
+                    if let Err(e) = send(&mut stdin, tool_result) { let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"stderr".into(),text:format!("Failed to send tool result: {e}")}); }
+                }
+            }
+            if handled_tool { continue; }
             match method {
                 "item/agentMessage/delta" => if let Some(delta)=v["params"]["delta"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"delta".into(),text:delta.into()}); },
                 "item/started" => if let Some(t)=v["params"]["item"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Started {t}")}); },
