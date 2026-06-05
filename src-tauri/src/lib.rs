@@ -90,7 +90,7 @@ pub struct AgentRunInput { pub project_slug: String, pub prompt: String, pub lin
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRunEvent { pub run_id: String, pub kind: String, pub text: String }
+pub struct AgentRunEvent { pub run_id: String, pub kind: String, pub text: String, pub payload: Option<serde_json::Value> }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -704,7 +704,10 @@ This hunt run has been created. Results will appear in date-stamped `jobs-YYYY-M
     Ok(HuntRunOutput { folder_path: rel_folder.clone(), results_path: results_rel })
 }
 fn emit_event(ch: &Channel<AgentRunEvent>, run_id: &str, kind: &str, text: impl Into<String>) {
-    let _ = ch.send(AgentRunEvent{run_id: run_id.to_string(), kind: kind.to_string(), text: text.into()});
+    let _ = ch.send(AgentRunEvent{run_id: run_id.to_string(), kind: kind.to_string(), text: text.into(), payload: None});
+}
+fn emit_event_payload(ch: &Channel<AgentRunEvent>, run_id: &str, kind: &str, text: impl Into<String>, payload: serde_json::Value) {
+    let _ = ch.send(AgentRunEvent{run_id: run_id.to_string(), kind: kind.to_string(), text: text.into(), payload: Some(payload)});
 }
 
 fn actor_api_slug(slug: &str) -> String { slug.replace('/', "~") }
@@ -972,7 +975,18 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
         }
         if let Err(e) = fs::write(&results_path, md) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
         let summary = if new_count == 0 { "No new jobs found --- all up to date.".to_string() } else { format!("Hunt complete. Added {} new job{} to {}/", new_count, if new_count == 1 { "" } else { "s" }, job_dir_name) };
-        emit_event(&on_event, &run_id, "completed", summary);
+        let payload = serde_json::json!({
+            "rawFound": raw_found,
+            "newJobs": new_count,
+            "filtered": filtered,
+            "duplicates": already_seen + intra_duplicate,
+            "totalDistinctJobs": total_jobs,
+            "totalRuns": total_runs,
+            "jobDirName": job_dir_name,
+            "resultsPath": input.results_path,
+            "sourceFailures": failures
+        });
+        emit_event_payload(&on_event, &run_id, "completed", summary, payload);
     });
     Ok(return_run_id)
 }
@@ -1504,7 +1518,48 @@ fn migrate_old_hunt_format(hunt_dir: &Path) -> Result<(), String> {
 fn string_alias(v:&Value, keys:&[&str])->Option<String>{ for k in keys { if let Some(x)=v.get(*k) { if let Some(s)=x.as_str(){ if !s.trim().is_empty(){ return Some(s.trim().to_string()) } } else if !x.is_null() && (x.is_number() || x.is_boolean()) { return Some(x.to_string()) } } } None }
 fn array_items(raw: Value)->Vec<Value>{ if let Some(a)=raw.as_array(){ return a.clone(); } for k in ["items","data","datasetItems","results"] { if let Some(a)=raw.get(k).and_then(|v|v.as_array()){ return a.clone(); } } vec![raw] }
 fn dedupe_key(company:&str,title:&str,apply:&str,source:&str)->String{ format!("{}:{}:{}:{}",company.to_lowercase(),title.to_lowercase(),apply.to_lowercase(),source.to_lowercase()) }
-fn hunt_job_dedup_key(j: &HuntJob) -> String { format!("{}:{}:{}:{}", j.title.to_lowercase(), j.company.to_lowercase(), j.apply_url.to_lowercase(), j.source_name.to_lowercase()) }
+fn normalize_text(s: &str) -> String {
+    let trimmed = s.trim().to_lowercase();
+    let mut res = String::with_capacity(trimmed.len());
+    let mut in_space = false;
+    for c in trimmed.chars() {
+        if c.is_whitespace() {
+            if !in_space { res.push(' '); in_space = true; }
+        } else {
+            res.push(c); in_space = false;
+        }
+    }
+    let trimmed_res = res.trim().trim_end_matches(|c: char| !c.is_alphanumeric() && c != ' ').to_string();
+    if trimmed_res.is_empty() { s.trim().to_lowercase() } else { trimmed_res }
+}
+
+fn normalize_url(url: &str) -> String {
+    let url = url.trim().to_lowercase();
+    if let Some(q_pos) = url.find('?') {
+        let base = &url[..q_pos];
+        let query = &url[q_pos+1..];
+        let mut clean_params: Vec<&str> = Vec::new();
+        for param in query.split('&') {
+            let pl = param.to_lowercase();
+            if pl.starts_with("utm_") || pl.starts_with("ref=") || pl.starts_with("source=") {
+                continue;
+            }
+            clean_params.push(param);
+        }
+        if clean_params.is_empty() { base.to_string() }
+        else { format!("{}?{}", base, clean_params.join("&")) }
+    } else { url }
+}
+
+fn hunt_job_dedup_key(j: &HuntJob) -> String {
+    let apply = j.apply_url.trim();
+    if !apply.is_empty() { normalize_url(apply) }
+    else { format!("{}:{}:{}",
+        normalize_text(&j.title),
+        normalize_text(&j.company),
+        j.source_name.to_lowercase())
+    }
+}
 fn normalize_job(v:&Value)->Result<JobRecord,String>{ let title=string_alias(v,&["title","jobTitle","position","name"]).ok_or("missing title")?; let company=string_alias(v,&["company","companyName","employer","organization"]).ok_or("missing company")?; let apply_url=string_alias(v,&["applyUrl","applyURL","url","jobUrl","jobURL","link"]).ok_or("missing applyUrl/sourceUrl")?; let source_url=string_alias(v,&["sourceUrl","sourceURL","postingUrl","jobUrl","url","link"]).unwrap_or_else(||apply_url.clone()); let remote=string_alias(v,&["remoteType","remote","workplaceType"]).unwrap_or_else(||"unknown".into()).to_lowercase(); let remote_type=if remote.contains("hybrid"){"hybrid"}else if remote.contains("remote")||remote=="true"{"remote"}else if remote.contains("onsite")||remote.contains("office"){"onsite"}else{"unknown"}.to_string(); let key=dedupe_key(&company,&title,&apply_url,&source_url); Ok(JobRecord{id:short_hash(&key),title,company,location:string_alias(v,&["location","jobLocation","city"]),remote_type,description:string_alias(v,&["description","jobDescription","text","summary"]),salary_range:string_alias(v,&["salary","salaryRange","compensation"]),apply_url,source_url,source_type:"apify".into(),dedupe_key:key,status:"new".into(),created_at:now()}) }
 
 #[tauri::command]
@@ -1760,10 +1815,10 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
         .map_err(|e| format!("Could not start Codex app-server: {e}"))?;
     let pid = child.id();
     state.pids.lock().map_err(|_| "Agent state lock failed")?.insert(run_id.clone(), pid);
-    let _ = on_event.send(AgentRunEvent{run_id:run_id.clone(),kind:"started".into(),text:format!("Starting Codex app-server · pid {pid}")});
+    let _ = on_event.send(AgentRunEvent{payload:None,run_id:run_id.clone(),kind:"started".into(),text:format!("Starting Codex app-server · pid {pid}")});
     if let Some(stderr) = child.stderr.take() {
         let event_err = on_event.clone(); let id = run_id.clone();
-        thread::spawn(move || { for line in BufReader::new(stderr).lines().map_while(Result::ok) { let _ = event_err.send(AgentRunEvent{run_id:id.clone(),kind:"stderr".into(),text:line}); } });
+        thread::spawn(move || { for line in BufReader::new(stderr).lines().map_while(Result::ok) { let _ = event_err.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"stderr".into(),text:line}); } });
     }
     let mut stdin = child.stdin.take().ok_or("Codex stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("Codex stdout unavailable")?;
@@ -1775,37 +1830,37 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
         };
         let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"drop-the-grind","version":"0.1.0"},"capabilities":{"experimentalApi":true}}});
         let thread_start = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"cwd":root_str,"model":model,"approvalPolicy":"on-failure","sandbox":"workspace-write","ephemeral":true}});
-        let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:"Waiting for app-server initialize response".into()});
-        if let Err(e)=send(&mut stdin, init).and_then(|_| send(&mut stdin, thread_start)) { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:e}); return; }
-        let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:"Waiting for thread/start response".into()});
+        let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:"Waiting for app-server initialize response".into()});
+        if let Err(e)=send(&mut stdin, init).and_then(|_| send(&mut stdin, thread_start)) { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"failed".into(),text:e}); return; }
+        let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:"Waiting for thread/start response".into()});
         let mut thread_id = String::new();
         let (tx, rx) = mpsc::channel::<String>();
         thread::spawn(move || { for line in BufReader::new(stdout).lines().map_while(Result::ok) { if tx.send(line).is_err(){break;} } });
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex thread/start response".into()}); return; }
+            if remaining.is_zero() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex thread/start response".into()}); return; }
             let Ok(line)=rx.recv_timeout(remaining.min(Duration::from_millis(500))) else { continue; };
-            let Ok(v): Result<Value,_> = serde_json::from_str(line.trim()) else { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Non-JSON app-server output: {}", line.chars().take(80).collect::<String>())}); continue; };
-            if v["id"] == 1 { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:"App-server initialized".into()}); }
-            if v["id"] == 2 { if let Some(err)=v["error"]["message"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:err.into()}); return; } if let Some(t)=v["result"]["thread"]["id"].as_str() { thread_id=t.to_string(); break; } }
-            if let Some(method)=v["method"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:method.into()}); }
+            let Ok(v): Result<Value,_> = serde_json::from_str(line.trim()) else { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:format!("Non-JSON app-server output: {}", line.chars().take(80).collect::<String>())}); continue; };
+            if v["id"] == 1 { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:"App-server initialized".into()}); }
+            if v["id"] == 2 { if let Some(err)=v["error"]["message"].as_str() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"failed".into(),text:err.into()}); return; } if let Some(t)=v["result"]["thread"]["id"].as_str() { thread_id=t.to_string(); break; } }
+            if let Some(method)=v["method"].as_str() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:method.into()}); }
         }
-        if thread_id.is_empty() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:"Codex app-server did not create a thread".into()}); return; }
+        if thread_id.is_empty() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"failed".into(),text:"Codex app-server did not create a thread".into()}); return; }
         let turn = serde_json::json!({"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":thread_id,"input":[{"type":"text","text":prompt}],"model":model,"effort":effort}});
-        let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Thread created · starting turn · model {model} · thinking {effort}")});
-        if let Err(e)=send(&mut stdin, turn) { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:e}); return; }
+        let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:format!("Thread created · starting turn · model {model} · thinking {effort}")});
+        if let Err(e)=send(&mut stdin, turn) { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"failed".into(),text:e}); return; }
         let started_at = std::time::Instant::now();
         let mut last_activity = std::time::Instant::now();
         let max_total = Duration::from_secs(20 * 60);
         let max_idle = Duration::from_secs(5 * 60);
         loop {
-            if started_at.elapsed() > max_total { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex turn to finish after 20 minutes".into()}); break; }
-            if last_activity.elapsed() > max_idle { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex activity for 5 minutes".into()}); break; }
+            if started_at.elapsed() > max_total { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex turn to finish after 20 minutes".into()}); break; }
+            if last_activity.elapsed() > max_idle { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"failed".into(),text:"Timed out waiting for Codex activity for 5 minutes".into()}); break; }
             let Ok(line)=rx.recv_timeout(Duration::from_millis(500)) else { continue; };
             last_activity = std::time::Instant::now();
             let Ok(v): Result<Value,_> = serde_json::from_str(line.trim()) else { continue; };
-            if v["id"] == 3 { if let Some(err)=v["error"]["message"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"failed".into(),text:err.into()}); return; } }
+            if v["id"] == 3 { if let Some(err)=v["error"]["message"].as_str() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"failed".into(),text:err.into()}); return; } }
             let Some(method)=v["method"].as_str() else { continue; };
             let mut handled_tool = false;
             if method == "item/toolCall" || method == "item/toolUse" || method == "item/tool_call" || method == "item/tool_use" {
@@ -1814,40 +1869,40 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
                 let tool_name = item.get("name").and_then(|x| x.as_str()).unwrap_or("unknown").to_string();
                 let args = item.get("arguments").unwrap_or(&Value::Null);
                 let target = args.get("path").or_else(|| args.get("file")).or_else(|| args.get("query")).or_else(|| args.get("command")).or_else(|| args.get("cmd")).and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or_else(|| tool_name.clone());
-                let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"tool-call".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"target":target,"status":"pending"}).to_string()});
+                let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"tool-call".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"target":target,"status":"pending"}).to_string()});
                 let result = execute_tool(&tool_name, args, std::path::Path::new(&root_str));
                 let status = if result.is_ok() { "done" } else { "error" };
                 let preview = match &result { Ok(s) => s.chars().take(200).collect::<String>(), Err(e) => e.clone() };
-                let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"tool-result".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"status":status,"preview":preview}).to_string()});
+                let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"tool-result".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"status":status,"preview":preview}).to_string()});
                 let tool_result = serde_json::json!({"jsonrpc":"2.0","method":"tool/result","params":{"toolCallId":tool_call_id,"result":result.ok().unwrap_or_else(|| "Error".into())}});
-                if let Err(e) = send(&mut stdin, tool_result) { let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"stderr".into(),text:format!("Failed to send tool result: {e}")}); }
+                if let Err(e) = send(&mut stdin, tool_result) { let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"stderr".into(),text:format!("Failed to send tool result: {e}")}); }
                 handled_tool = true;
             }
             if !handled_tool && method == "item/started" {
                 let item_type = v["params"]["item"]["type"].as_str().unwrap_or("");
-                let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Started {item_type}")});
+                let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:format!("Started {item_type}")});
                 if item_type == "tool_use" || item_type == "tool_call" || item_type == "toolUse" || item_type == "toolCall" {
                     let item = &v["params"]["item"];
                     let tool_call_id = item["id"].as_str().unwrap_or("").to_string();
                     let tool_name = item["name"].as_str().unwrap_or("unknown").to_string();
                     let args = &item["arguments"];
                     let target = args.get("path").or_else(|| args.get("file")).or_else(|| args.get("query")).or_else(|| args.get("command")).or_else(|| args.get("cmd")).and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or_else(|| tool_name.clone());
-                    let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"tool-call".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"target":target,"status":"pending"}).to_string()});
+                    let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"tool-call".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"target":target,"status":"pending"}).to_string()});
                     let result = execute_tool(&tool_name, args, std::path::Path::new(&root_str));
                     let status = if result.is_ok() { "done" } else { "error" };
                     let preview = match &result { Ok(s) => s.chars().take(200).collect::<String>(), Err(e) => e.clone() };
-                    let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"tool-result".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"status":status,"preview":preview}).to_string()});
+                    let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"tool-result".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"status":status,"preview":preview}).to_string()});
                     let tool_result = serde_json::json!({"jsonrpc":"2.0","method":"tool/result","params":{"toolCallId":tool_call_id,"result":result.ok().unwrap_or_else(|| "Error".into())}});
-                    if let Err(e) = send(&mut stdin, tool_result) { let _ = event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"stderr".into(),text:format!("Failed to send tool result: {e}")}); }
+                    if let Err(e) = send(&mut stdin, tool_result) { let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"stderr".into(),text:format!("Failed to send tool result: {e}")}); }
                 }
             }
             if handled_tool { continue; }
             match method {
-                "item/agentMessage/delta" => if let Some(delta)=v["params"]["delta"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"delta".into(),text:delta.into()}); },
-                "item/started" => if let Some(t)=v["params"]["item"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Started {t}")}); },
-                "item/completed" => if let Some(t)=v["params"]["item"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Completed {t}")}); },
-                "turn/completed" => { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"completed".into(),text:"Done".into()}); break; },
-                "thread/status/changed" => if let Some(t)=v["params"]["status"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{run_id:id.clone(),kind:"status".into(),text:format!("Thread {t}")}); },
+                "item/agentMessage/delta" => if let Some(delta)=v["params"]["delta"].as_str() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"delta".into(),text:delta.into()}); },
+                "item/started" => if let Some(t)=v["params"]["item"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:format!("Started {t}")}); },
+                "item/completed" => if let Some(t)=v["params"]["item"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:format!("Completed {t}")}); },
+                "turn/completed" => { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"completed".into(),text:"Done".into()}); break; },
+                "thread/status/changed" => if let Some(t)=v["params"]["status"]["type"].as_str() { let _=event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"status".into(),text:format!("Thread {t}")}); },
                 _ => {}
             }
         }
@@ -1860,7 +1915,7 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
 fn cancel_agent_run(app: AppHandle, state: State<AgentRunState>, input: CancelAgentRunInput) -> Result<(), String> {
     if let Some(pid) = state.pids.lock().map_err(|_| "Agent state lock failed")?.remove(&input.run_id) {
         let _ = Command::new("/bin/kill").arg("-TERM").arg(pid.to_string()).output();
-        let _ = app.emit("agent-run-event", AgentRunEvent{run_id:input.run_id,kind:"cancelled".into(),text:"Cancelled".into()});
+        let _ = app.emit("agent-run-event", AgentRunEvent{payload:None,run_id:input.run_id,kind:"cancelled".into(),text:"Cancelled".into()});
     }
     Ok(())
 }
