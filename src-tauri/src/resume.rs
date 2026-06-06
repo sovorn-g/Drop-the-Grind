@@ -69,12 +69,6 @@ pub struct ResumeInput {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct ConvertOutput {
-    pub tex_path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
 pub struct RenderOutput {
     pub pdf_path: String,
     pub compile_errors: Option<String>,
@@ -94,8 +88,8 @@ pub struct Skill {
 pub const SKILLS: &[Skill] = &[
     Skill {
         name: "/fix-render",
-        description: "Debug and fix resume PDF rendering issues (missing fields, format errors, LaTeX problems)",
-        keyword_patterns: &["render", "pdf", "latex", "/fix-render", "fix the resume", "resume is broken", "rendering failed"],
+        description: "Debug and fix resume PDF rendering issues (missing fields, format errors, Typst problems)",
+        keyword_patterns: &["render", "pdf", "typst", "/fix-render", "fix the resume", "resume is broken", "rendering failed"],
     },
 ];
 
@@ -301,13 +295,10 @@ fn parse_education(content: &str) -> Vec<EducationItem> {
 
 // ── Validator ───────────────────────────────────────────────────
 
-const LATEX_SPECIAL_CHARS: &[char] = &['%', '$', '&', '_', '#', '{', '}', '~', '^'];
-
 /// Validates a resume.md file and returns structured issues.
 pub fn validate_resume_content(content: &str) -> ValidationResult {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
-    let mut line_num = 0;
 
     // Phase 1: Check frontmatter
     let lines: Vec<&str> = content.lines().collect();
@@ -356,9 +347,6 @@ pub fn validate_resume_content(content: &str) -> ValidationResult {
         });
     }
 
-    // Check for LaTeX special chars in frontmatter
-    check_latex_safety(&fm_content, "frontmatter", &mut errors, &mut warnings);
-
     // Phase 2: Check body sections
     let body_start = if frontmatter_lines > 0 { frontmatter_range.1 + 1 } else { 0 };
     let body_lines: Vec<(usize, &str)> = lines.iter().enumerate().skip(body_start).map(|(i, l)| (i, *l)).collect();
@@ -369,7 +357,6 @@ pub fn validate_resume_content(content: &str) -> ValidationResult {
     let mut experience_item_count = 0;
 
     for (i, line) in &body_lines {
-        line_num = i + 1;
         let trimmed = line.trim();
 
         if trimmed.starts_with("## ") {
@@ -401,9 +388,6 @@ pub fn validate_resume_content(content: &str) -> ValidationResult {
                 });
             }
         }
-
-        // Check LaTeX safety in all text
-        check_latex_safety_line(trimmed, i + 1, &mut errors, &mut warnings);
     }
 
     if !has_experience {
@@ -440,148 +424,143 @@ pub fn validate_resume_content(content: &str) -> ValidationResult {
     }
 }
 
-fn check_latex_safety(content: &str, _field: &str, _errors: &mut Vec<ValidationIssue>, warnings: &mut Vec<ValidationIssue>) {
-    for (i, line) in content.lines().enumerate() {
-        check_latex_safety_line(line, i + 1, _errors, warnings);
-    }
-}
+// ── Typst Escape ────────────────────────────────────────────────
 
-fn check_latex_safety_line(line: &str, line_num: usize, _errors: &mut Vec<ValidationIssue>, warnings: &mut Vec<ValidationIssue>) {
-    let mut unsafe_chars: Vec<char> = Vec::new();
-    for ch in LATEX_SPECIAL_CHARS {
-        if line.contains(*ch) {
-            unsafe_chars.push(*ch);
-        }
-    }
-    if !unsafe_chars.is_empty() {
-        let chars: String = unsafe_chars.iter().collect();
-        warnings.push(ValidationIssue {
-            field: "body".into(),
-            message: format!("Unescaped LaTeX special character(s): '{}' — will be auto-escaped as \\{}", chars, chars),
-            line: Some(line_num),
-            severity: "warning".into(),
-        });
-    }
-}
-
-// ── LaTeX Escape ───────────────────────────────────────────────
-
-/// Escapes LaTeX special characters in text
-pub fn escape_latex(s: &str) -> String {
+/// Escapes Typst special characters in plain text content.
+/// Characters: \\ # $ _ * [ ] { } @ ~
+pub fn escape_typst_text(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
-            '%' => result.push_str("\\%"),
-            '$' => result.push_str("\\$"),
-            '&' => result.push_str("\\&"),
-            '_' => result.push_str("\\_"),
+            '\\' => result.push_str("\\\\"),
             '#' => result.push_str("\\#"),
+            '$' => result.push_str("\\$"),
+            '_' => result.push_str("\\_"),
+            '*' => result.push_str("\\*"),
+            '[' => result.push_str("\\["),
+            ']' => result.push_str("\\]"),
             '{' => result.push_str("\\{"),
             '}' => result.push_str("\\}"),
-            '~' => result.push_str("\\textasciitilde{}"),
-            '^' => result.push_str("\\textasciicircum{}"),
+            '@' => result.push_str("\\@"),
+            '~' => result.push_str("\\~"),
             _ => result.push(ch),
         }
     }
     result
 }
 
-// ── Converter ──────────────────────────────────────────────────
+// ── Typst Generator ─────────────────────────────────────────────
 
-/// Converts a Resume to LaTeX using a built-in template.
-pub fn resume_to_latex(resume: &Resume) -> String {
-    let mut latex = String::new();
+/// Converts a Resume to a Typst document string.
+/// Produces a clean, professional resume layout using bundled Typst.
+pub fn resume_to_typst(resume: &Resume) -> String {
+    let e = escape_typst_text;
+    let mut s = String::new();
 
-    // Preamble
-    latex.push_str(r#"\documentclass[11pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
-\usepackage[margin=0.75in]{geometry}
-\usepackage{hyperref}
-\usepackage{xcolor}
-\usepackage{titlesec}
-\pagestyle{empty}
+    // ── Page & text setup ──
+    s.push_str("#set page(paper: \"us-letter\", margin: (x: 0.75in, y: 0.7in))\n");
+    s.push_str("#set text(font: (\"Helvetica\", \"Arial\"), size: 10.5pt)\n");
+    s.push_str("#set par(leading: 0.55em)\n\n");
 
-\titleformat{\section}{\large\bfseries\uppercase}{}{0em}{}[\vspace{-0.3em}\rule{\textwidth}{0.5pt}]
-\titlespacing*{\section}{0pt}{1.2em}{0.5em}
-
-\titleformat{\subsection}[runin]{\bfseries}{}{0em}{}
-\titlespacing*{\subsection}{0pt}{0.5em}{0.3em}
-
-\newcommand{\bulletitem}{\vspace{-0.2em}\item}
-
-\begin{document}
-
-"#);
-
-    // Header
+    // ── Header: name ──
     let meta = &resume.meta;
-    latex.push_str(&format!("\\begin{{center}}\n{{\\Huge \\textbf{{{}}}}}\\\\\n", escape_latex(&meta.name)));
+    s.push_str(&format!("#align(center, text(size: 22pt, weight: \"bold\")[{}])\n", e(&meta.name)));
 
-    let mut header_items = Vec::new();
-    if !meta.email.is_empty() { header_items.push(format!("\\href{{mailto:{}}}{{{}}}", escape_latex(&meta.email), escape_latex(&meta.email))); }
-    if let Some(ref p) = meta.phone { header_items.push(escape_latex(p)); }
-    if let Some(ref l) = meta.location { header_items.push(escape_latex(l)); }
-    if let Some(ref li) = meta.linkedin { header_items.push(format!("\\href{{{}}}{{LinkedIn}}", escape_latex(li))); }
-
-    if !header_items.is_empty() {
-        latex.push_str(&header_items.join(" $\\cdot$ "));
-        latex.push_str("\\\\\n");
+    // ── Header: contact line ──
+    let mut contact_parts: Vec<String> = Vec::new();
+    if !meta.email.is_empty() {
+        contact_parts.push(format!("{}", e(&meta.email)));
+    }
+    if let Some(ref p) = meta.phone {
+        contact_parts.push(e(p));
+    }
+    if let Some(ref l) = meta.location {
+        contact_parts.push(e(l));
+    }
+    if let Some(ref li) = meta.linkedin {
+        contact_parts.push(e(li));
+    }
+    if !contact_parts.is_empty() {
+        // Build contact line: each part is escaped, separators are literal
+        let contact_line = contact_parts.join(" \\| ");
+        s.push_str(&format!("#align(center, text(size: 9pt)[{}])\n\n", contact_line));
     }
 
-    latex.push_str("\\end{center}\n\n");
-
-    // Summary
+    // ── Summary ──
     if let Some(ref summary) = meta.summary {
         if !summary.is_empty() {
-            latex.push_str(&format!("\n{}\n\n", escape_latex(summary)));
+            s.push_str(&format!("{}\n\n", e(summary)));
         }
     }
 
-    // Experience
+    // ── Separator ──
+    s.push_str("#line(length: 100%)\n\n");
+
+    // ── Experience ──
     if !resume.experience.is_empty() {
-        latex.push_str("\\section*{Experience}\n\n");
+        s.push_str("= Experience\n\n");
         for exp in &resume.experience {
-            latex.push_str(&format!(
-                "\\subsection*{{{}}}\n\\textit{{{}}}",
-                escape_latex(&exp.title),
-                escape_latex(&exp.company)
-            ));
+            s.push_str(&format!("*{}* \\\n", e(&exp.title)));
+            s.push_str(&format!("#text(size: 9.5pt, style: \"italic\")[{}]", e(&exp.company)));
             if let Some(ref dates) = exp.dates {
-                latex.push_str(&format!(" \\hfill {}", escape_latex(dates)));
+                s.push_str(&format!(" #h(1fr) {}", e(dates)));
             }
-            latex.push_str("\n\n\\begin{itemize}\n");
+            s.push('\n');
             for bullet in &exp.bullets {
-                latex.push_str(&format!("  \\item {}\n", escape_latex(bullet)));
+                s.push_str(&format!("- {}\n", e(bullet)));
             }
-            latex.push_str("\\end{itemize}\n\n");
+            s.push_str("\n");
         }
     }
 
-    // Skills
+    // ── Skills ──
     if !resume.skills.is_empty() {
-        latex.push_str("\\section*{Skills}\n\n");
-        latex.push_str(&format!("{}\n\n", escape_latex(&resume.skills.join(", "))));
+        s.push_str("= Skills\n\n");
+        s.push_str(&format!("{}\n\n", e(&resume.skills.join(", "))));
     }
 
-    // Education
+    // ── Education ──
     if !resume.education.is_empty() {
-        latex.push_str("\\section*{Education}\n\n");
+        s.push_str("= Education\n\n");
         for edu in &resume.education {
-            latex.push_str(&format!(
-                "\\noindent {}$\\hfill$\\textit{{{}}}",
-                escape_latex(&edu.degree),
-                escape_latex(&edu.institution)
-            ));
+            s.push_str(&format!("*{}* \\\n", e(&edu.degree)));
+            s.push_str(&format!("#text(size: 9.5pt, style: \"italic\")[{}]", e(&edu.institution)));
             if let Some(ref year) = edu.year {
-                latex.push_str(&format!(" \\hfill {}", escape_latex(year)));
+                s.push_str(&format!(" #h(1fr) {}", e(year)));
             }
-            latex.push_str("\n\n");
+            s.push_str("\n\n");
         }
     }
 
-    latex.push_str("\\end{document}\n");
-    latex
+    s
+}
+
+// ── Bundled Typst Binary Resolution ────────────────────────────
+
+/// Resolves the path to the bundled Typst binary.
+/// Checks development paths first, then production bundle locations.
+fn resolve_typst_binary() -> Result<PathBuf, String> {
+    // Dev paths (project-root relative)
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    for rel in &["src-tauri/resources/bin/typst", "resources/bin/typst"] {
+        let p = cwd.join(rel);
+        if p.exists() {
+            return Ok(p.canonicalize().map_err(|e| e.to_string())?);
+        }
+    }
+
+    // Production bundle paths (macOS .app bundle layout)
+    if let Ok(exe) = std::env::current_exe() {
+        // App.app/Contents/MacOS/executable → Resources/bin/typst
+        if let Some(parent) = exe.parent() {
+            let p = parent.join("../Resources/bin/typst");
+            if p.exists() {
+                return Ok(p.canonicalize().map_err(|e| e.to_string())?);
+            }
+        }
+    }
+
+    Err("Typst binary not found. Run the following to install:\n  ./scripts/install-typst-resource.sh".into())
 }
 
 // ── Tauri commands ─────────────────────────────────────────────
@@ -611,66 +590,58 @@ pub fn validate_resume(input: ResumeInput) -> Result<ValidationResult, String> {
     Ok(validate_resume_content(&content))
 }
 
-/// Converts resume.md to .tex and returns the path.
-#[tauri::command]
-pub fn convert_resume(input: ResumeInput) -> Result<ConvertOutput, String> {
-    let project = super::project_root(&input.project_slug)?;
-    let job_dir = project.join(&input.job_path);
-    let resume_path = job_dir.join("resume.md");
-    let tex_path = job_dir.join("resume.tex");
-
-    // Validate first
-    let content = std::fs::read_to_string(&resume_path)
-        .map_err(|e| format!("Failed to read resume.md: {}", e))?;
-
-    let validation = validate_resume_content(&content);
-    if !validation.valid {
-        let error_msgs: Vec<String> = validation.errors.iter()
-            .map(|e| format!("{}: {}", e.field, e.message))
-            .collect();
-        return Err(format!("Resume has validation errors:\n{}", error_msgs.join("\n")));
-    }
-
-    let resume = parse_resume(&content)?;
-    let latex = resume_to_latex(&resume);
-
-    std::fs::write(&tex_path, &latex)
-        .map_err(|e| format!("Failed to write resume.tex: {}", e))?;
-
-    Ok(ConvertOutput {
-        tex_path: tex_path.to_string_lossy().to_string(),
-    })
-}
-
-/// Renders resume.tex to resume.pdf via pdflatex.
+/// Renders resume.md to resume.pdf via bundled Typst.
+/// Does not write intermediate .typ files to the workspace.
 #[tauri::command]
 pub fn render_resume_pdf(input: ResumeInput) -> Result<RenderOutput, String> {
     let project = super::project_root(&input.project_slug)?;
     let job_dir = project.join(&input.job_path);
-    let tex_path = job_dir.join("resume.tex");
     let pdf_path = job_dir.join("resume.pdf");
 
-    // Ensure .tex exists — run convert if needed
-    if !tex_path.exists() {
-        // Try to convert first
-        let convert_output = convert_resume(input.clone())?;
-        if !tex_path.exists() {
-            return Err(format!("resume.tex not found and conversion failed: {}", convert_output.tex_path));
-        }
+    // Resolve the bundled Typst binary
+    let typst_path = resolve_typst_binary()?;
+
+    // Read and parse resume.md
+    let resume_path = job_dir.join("resume.md");
+    if !resume_path.exists() {
+        return Err(format!("resume.md not found at: {}", resume_path.display()));
+    }
+    let content = std::fs::read_to_string(&resume_path)
+        .map_err(|e| format!("Failed to read resume.md: {}", e))?;
+    let resume = parse_resume(&content)
+        .map_err(|e| format!("Failed to parse resume: {}", e))?;
+
+    // Generate Typst document string
+    let typst_content = resume_to_typst(&resume);
+
+    // Write temporary .typ file (outside workspace, cleaned on drop)
+    let tmp_file = tempfile::Builder::new()
+        .suffix(".typ")
+        .tempfile()
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let tmp_path = tmp_file.path().to_path_buf();
+    std::fs::write(&tmp_path, &typst_content)
+        .map_err(|e| format!("Failed to write temp typst file: {}", e))?;
+
+    // Ensure output directory exists
+    if let Some(parent) = pdf_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    // Run pdflatex
-    let output = ProcessCmd::new("pdflatex")
-        .arg("-interaction=nonstopmode")
-        .arg("-output-directory")
-        .arg(&job_dir)
-        .arg(&tex_path)
+    // Run bundled typst compile
+    let output = ProcessCmd::new(&typst_path)
+        .arg("compile")
+        .arg(&tmp_path)
+        .arg(&pdf_path)
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                "pdflatex not found. Install TeX (e.g., 'brew install basictex' or 'mactex')".to_string()
+                format!(
+                    "Typst binary not found at {}. Run scripts/install-typst-resource.sh",
+                    typst_path.display()
+                )
             } else {
-                format!("Failed to run pdflatex: {}", e)
+                format!("Failed to run typst: {}", e)
             }
         })?;
 
@@ -678,23 +649,23 @@ pub fn render_resume_pdf(input: ResumeInput) -> Result<RenderOutput, String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // Extract a useful error snippet from the log
         let mut compile_errors = String::new();
-        for line in stdout.lines() {
-            if line.contains("! ") || line.contains("Error") || line.contains("error") {
-                compile_errors.push_str(line);
+        for line in stdout.lines().chain(stderr.lines()) {
+            let l = line.trim();
+            if l.contains("error:") || l.contains("Error:") || l.contains("panicked") {
+                compile_errors.push_str(l);
                 compile_errors.push('\n');
             }
         }
         if compile_errors.is_empty() {
-            compile_errors = format!("pdflatex failed. Stderr: {}", stderr);
+            compile_errors = format!("Typst compilation failed (exit code: {:?})", output.status.code());
         }
 
-        return Err(format!("LaTeX compilation failed:\n{}", compile_errors));
+        return Err(format!("Typst compilation failed:\n{}", compile_errors));
     }
 
     if !pdf_path.exists() {
-        return Err("pdflatex completed but resume.pdf was not generated (check LaTeX template)".into());
+        return Err("Typst completed but resume.pdf was not generated".into());
     }
 
     Ok(RenderOutput {
@@ -703,7 +674,7 @@ pub fn render_resume_pdf(input: ResumeInput) -> Result<RenderOutput, String> {
     })
 }
 
-/// Validates, converts, and renders — one-shot pipeline.
+/// Validates and renders resume.md to resume.pdf — one-shot pipeline.
 #[tauri::command]
 pub fn render_resume(input: ResumeInput) -> Result<RenderOutput, String> {
     // Step 1: Validate
@@ -715,13 +686,8 @@ pub fn render_resume(input: ResumeInput) -> Result<RenderOutput, String> {
         return Err(format!("Resume validation failed:\n{}", error_msgs.join("\n")));
     }
 
-    // Step 2: Convert
-    let _convert = convert_resume(input.clone())?;
-
-    // Step 3: Render
-    let render = render_resume_pdf(input)?;
-
-    Ok(render)
+    // Step 2: Render to PDF directly
+    render_resume_pdf(input)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -743,7 +709,7 @@ pub fn list_skills() -> Vec<SkillInfo> {
 pub const SKILL_FIX_RENDER: &str = concat!(
     "## /fix-render — Resume PDF debug skill\n",
     "\n",
-    "Use this when the user mentions: render, PDF, fix the resume, latex, or /fix-render.\n",
+    "Use this when the user mentions: render, PDF, fix the resume, typst, or /fix-render.\n",
     "\n",
     "### Resume.md schema\n",
     "```\n",
@@ -773,18 +739,17 @@ pub const SKILL_FIX_RENDER: &str = concat!(
     "- Missing `name:` or `email:` in frontmatter → read `profile/resume.md` for the user's info, fill it in.\n",
     "- Experience item missing company → format should be `### Title | Company | Dates`. If pipes are missing, add them.\n",
     "- Missing `## Experience` section → create one with at least one entry.\n",
-    "- LaTeX special characters (`% $ & _ # { } ~ ^`) in text → these are auto-escaped during conversion (warnings only).\n",
     "- Missing `## Skills` section → recommended but not required, add from profile/resume.md if available.\n",
     "\n",
     "### Workflow\n",
     "1. Read `resume.md` from the job path using `read_file`.\n",
     "2. Check each section against the schema above.\n",
-    "3. Fix issues using `write_file` — only edit `resume.md`, never `.tex` or `.pdf`.\n",
+    "3. Fix issues using `write_file` — only edit `resume.md`, never `.typ` or `.pdf`.\n",
     "4. For missing user info (name, email), read `profile/resume.md` from the workspace root.\n",
     "5. After fixing, tell the user the .md is clean and ask them to click the Render button in the UI to generate the PDF.\n",
     "\n",
-    "### If pdflatex is available\n",
-    "If a `.tex` file already exists in the job directory, run:\n",
-    "`run_command(\"cd <workspace_root> && pdflatex -interaction=nonstopmode -output-directory <job_dir> <job_dir>/resume.tex\")`\n",
-    "Check for the `.tex` file first with `read_file`. If it doesn't exist, the user needs to click Render in the UI.\n",
+    "### PDF generation\n",
+    "PDF rendering is done by the bundled Typst binary (not pdflatex). The render command\n",
+    "reads `resume.md`, generates a temporary Typst document, and compiles it to `resume.pdf`.\n",
+    "Intermediate `.typ` files are NOT written to the workspace.\n",
 );

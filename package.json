@@ -1,31 +1,25 @@
 {
-  "name": "drop-the-grind",
+  "name": "@getpaseo/desktop",
+  "version": "0.1.90",
   "private": true,
-  "version": "0.1.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+  "description": "Paseo desktop app (Electron wrapper)",
+  "homepage": "https://paseo.sh",
+  "license": "AGPL-3.0-or-later",
+  "author": {
+    "name": "Mohamed Boudra",
+    "email": "hello@moboudra.com"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/getpaseo/paseo.git"
+  },
+  "main": "dist/main.js",
   "dependencies": {
-    "@tauri-apps/api": "^2.2.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "vite": "^7.0.0",
-    "typescript": "^5.8.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "lucide-react": "^0.468.0",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^2.5.5"
-  },
-  "devDependencies": {
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "tailwindcss": "^3.4.17",
-    "postcss": "^8.4.49",
-    "autoprefixer": "^10.4.20",
-    "@tauri-apps/cli": "^2.2.0"
+    "@getpaseo/cli": "*",
+    "@getpaseo/server": "*",
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.6.2",
+    "ws": "^8.14.2",
+    "zod": "^3.23.8"
   }
 }

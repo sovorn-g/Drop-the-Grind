@@ -116,7 +116,7 @@ Common/declared output fields:
 ## Indeed
 
 - Mode: Standard
-- Actor: `misceres/indeed-scraper`
+- Actor: `borderline/indeed-scraper`
 - Declares `actorDefinition.output`: yes
 - Declares dataset JSON schema fields: yes
 - Declares dataset view fields: 9

@@ -321,7 +321,7 @@ fn create_project(name: String) -> Result<Project, String> {
     Ok(project)
 }
 
-fn build_tree(root:&Path,current:&Path)->Result<FileTreeNode,String>{ let rel=current.strip_prefix(root).unwrap_or(current).to_string_lossy().to_string(); let name=current.file_name().and_then(|s|s.to_str()).unwrap_or(".").to_string(); if current.is_dir(){ let mut children=vec![]; for entry in fs::read_dir(current).map_err(|e|e.to_string())?{ let entry=entry.map_err(|e|e.to_string())?; children.push(build_tree(root,&entry.path())?); } children.sort_by(|a,b|a.kind.cmp(&b.kind).then(a.name.cmp(&b.name))); Ok(FileTreeNode{name,path:rel,kind:"directory".into(),children:Some(children)}) } else { Ok(FileTreeNode{name,path:rel,kind:"file".into(),children:None}) } }
+fn build_tree(root:&Path,current:&Path)->Result<FileTreeNode,String>{ let rel=current.strip_prefix(root).unwrap_or(current).to_string_lossy().to_string(); let name=current.file_name().and_then(|s|s.to_str()).unwrap_or(".").to_string(); if current.is_dir(){ let mut children=vec![]; for entry in fs::read_dir(current).map_err(|e|e.to_string())?{ let entry=entry.map_err(|e|e.to_string())?; if entry.file_name().to_str().map(|s| s.starts_with('.')).unwrap_or(false) { continue; } children.push(build_tree(root,&entry.path())?); } children.sort_by(|a,b|a.kind.cmp(&b.kind).then(a.name.cmp(&b.name))); Ok(FileTreeNode{name,path:rel,kind:"directory".into(),children:Some(children)}) } else { Ok(FileTreeNode{name,path:rel,kind:"file".into(),children:None}) } }
 #[tauri::command]
 fn list_projects() -> Result<Vec<Project>, String> {
     let mut projects = load_db()?.projects;
@@ -387,6 +387,7 @@ fn open_project(project_slug: String) -> Result<Project, String> {
 
 #[tauri::command] fn list_workspace_tree(project_slug:String)->Result<FileTreeNode,String>{ let root=project_root(&project_slug)?; build_tree(&root,&root) }
 #[tauri::command] fn read_text_file(project_slug:String,path:String)->Result<TextFile,String>{ let file=safe_project_path(&project_slug,&path)?; if !is_text_editable(&file){ return Ok(TextFile{content:"".into(),version:"binary".into(),read_only:true}); } let content=fs::read_to_string(&file).map_err(|e|e.to_string())?; let modified=fs::metadata(&file).and_then(|m|m.modified()).ok(); Ok(TextFile{content,version:format!("{:?}",modified),read_only:false}) }
+#[tauri::command] fn read_binary_file(project_slug:String,path:String)->Result<Vec<u8>,String>{ let file=safe_project_path(&project_slug,&path)?; fs::read(&file).map_err(|e|e.to_string()) }
 #[tauri::command] fn write_text_file(input:WriteInput)->Result<(),String>{ let file=safe_project_path(&input.project_slug,&input.path)?; if !is_text_editable(&file){return Err("This file type is read-only in Drop the Grind".into())} let tmp=file.with_extension(format!("{}.tmp",file.extension().and_then(|s|s.to_str()).unwrap_or("dtg"))); fs::write(&tmp,input.content).map_err(|e|e.to_string())?; fs::rename(&tmp,&file).map_err(|e|e.to_string())?; Ok(()) }
 
 fn validate_child_name(name: &str, kind: &str) -> Result<String, String> {
@@ -546,6 +547,13 @@ fn reveal_project_path(input: FilePathInput) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_project_file(input: FilePathInput) -> Result<(), String> {
+    let path = safe_project_path(&input.project_slug, &input.path)?;
+    Command::new("open").arg(path).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn save_source_config(input: SourceInput) -> Result<SourceConfig, String> {
     if input.actor_name.trim().is_empty() { return Err("Actor name is required".into()); }
     serde_json::from_str::<Value>(&input.input_template_json).map_err(|e| format!("Input JSON is invalid: {e}"))?;
@@ -561,18 +569,16 @@ fn generate_apify_files(input: SourceInput)->Result<(),String>{ let cfg=save_sou
 fn actor_slug_for_site(site: &str) -> &'static str {
     match site {
         "54 Career Sites" => "fantastic-jobs/career-site-job-listing-api",
-        "Indeed" => "misceres/indeed-scraper",
+        "Indeed" => "borderline/indeed-scraper",
         "LinkedIn" => "fantastic-jobs/advanced-linkedin-job-search-api",
         "Wellfound" => "crawlerbros/wellfound-scraper",
         "YC Startup Jobs" => "memo23/y-combinator-scraper",
         "Welcome to the Jungle" => "shahidirfan/jungle-job-scraper",
         "HiringCafe" => "memo23/apify-hiring-cafe-scraper",
-        "We Work Remotely" => "shahidirfan/weworkremotely-job-scrapper",
-        "4 Day Week" => "crawlerbros/four-day-week-jobs-scraper",
-        "FlexJobs" => "stealth_mode/flexjobs-jobs-search-scraper",
+        "We Work Remotely" => "crawlerbros/weworkremotely-job-scraper",
+        "FlexJobs" => "jupri/flexjobs-scraper",
         "Himalayas" => "inlifeprojects/himalayas-jobs-scraper",
-        "JustRemote" => "kinaesthetic_millionaire/justremote",
-        "Remotive" => "santamaria-automations/remotive-scraper",
+        "Remotive" => "unfenced-group/remotive-scraper",
         _ => "unknown",
     }
 }
@@ -732,6 +738,13 @@ fn country_code(location: &str) -> String {
     else { "US".into() }
 }
 fn posted_time_range(h: &HuntRunInput) -> &'static str { match h.posted_within.as_str() { "1 week" => "7d", "3 weeks" | "1 month" => "30d", _ => "6m" } }
+fn indeed_from_days(h: &HuntRunInput) -> &'static str { match h.posted_within.as_str() { "1 week" => "7", _ => "14" } }
+fn indeed_level(h: &HuntRunInput) -> &'static str {
+    let s = h.seniority.to_lowercase();
+    if s.contains("entry") || s.contains("intern") { "entry_level" }
+    else if s.contains("senior") || s.contains("director") || s.contains("executive") { "senior_level" }
+    else { "mid_level" }
+}
 fn fantastic_time_range(h: &HuntRunInput) -> &'static str { if h.posted_within == "1 week" { "7d" } else { "6m" } }
 fn min_salary_num(h: &HuntRunInput) -> i64 { h.min_salary.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<i64>().unwrap_or(0) * 1000 }
 fn seniority_array(h: &HuntRunInput) -> Vec<Value> {
@@ -740,8 +753,46 @@ fn seniority_array(h: &HuntRunInput) -> Vec<Value> {
     vec![Value::String(label.into())]
 }
 
+fn include_keyword_terms(h: &HuntRunInput) -> Vec<String> {
+    csv_words(&h.include_keywords).iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+}
+
+fn query_with_folded_include(h: &HuntRunInput) -> String {
+    let mut q = hunt_roles_query(h);
+    let iks = include_keyword_terms(h);
+    for ik in iks {
+        if !ik.is_empty() {
+            q.push_str(&format!(" OR {}", ik));
+        }
+    }
+    q
+}
+
+fn linkedin_seniority_filter(h: &HuntRunInput) -> Vec<Value> {
+    let s = h.seniority.to_lowercase();
+    let mut out = vec![];
+    if s.contains("entry") { out.push(Value::String("Internship".into())); out.push(Value::String("Entry level".into())); }
+    if s.contains("associate") { out.push(Value::String("Entry level".into())); }
+    if s.contains("mid") { out.push(Value::String("Mid-Senior level".into())); }
+    if s.contains("senior") && !s.contains("mid") { out.push(Value::String("Senior".into())); }
+    if s.contains("director") { out.push(Value::String("Director".into())); }
+    if s.contains("executive") { out.push(Value::String("Executive".into())); }
+    if out.is_empty() { vec![] } else { out }
+}
+
+fn fantastic_experience_filter(h: &HuntRunInput) -> Vec<Value> {
+    let s = h.experience.to_lowercase();
+    let mut out = vec![];
+    if s.contains("0–1") || s.contains("0-1") { out.push(Value::String("0-1".into())); }
+    if s.contains("1–3") || s.contains("1-3") { out.push(Value::String("1-3".into())); }
+    if s.contains("3–5") || s.contains("3-5") { out.push(Value::String("3-5".into())); }
+    if s.contains("5–8") || s.contains("5-8") || s.contains("8+") { out.push(Value::String("5+".into())); }
+    out
+}
+
 fn build_actor_input(site: &str, h: &HuntRunInput) -> Value {
     let query = hunt_roles_query(h);
+    let folded_query = query_with_folded_include(h);
     let include = csv_words(&h.include_keywords);
     let exclude = csv_words(&h.exclude_keywords);
     let locs = location_terms(h);
@@ -752,26 +803,38 @@ fn build_actor_input(site: &str, h: &HuntRunInput) -> Value {
             "titleSearch": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(),
             "titleExclusionSearch": exclude, "descriptionExclusionSearch": csv_words(&h.exclude_keywords),
             "locationSearch": locs, "descriptionSearch": include,
-            "descriptionType": "text"
+            "descriptionType": "text",
+            "aiExperienceLevelFilter": fantastic_experience_filter(h),
+            "remote only (legacy)": h.work_mode == "Remote"
         }),
         "LinkedIn" => serde_json::json!({
             "timeRange": fantastic_time_range(h), "limit": max, "includeAi": true,
             "titleSearch": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(),
             "titleExclusionSearch": exclude, "descriptionExclusionSearch": csv_words(&h.exclude_keywords),
             "locationSearch": locs, "descriptionSearch": include,
-            "descriptionType": "text", "remote": h.work_mode == "Remote"
+            "descriptionType": "text", "remote": h.work_mode == "Remote",
+            "seniorityFilter": linkedin_seniority_filter(h)
         }),
-        "Indeed" => serde_json::json!({"position": query, "country": country_code(&h.location), "location": h.location, "maxItemsPerSearch": h.max_items, "saveOnlyUniqueItems": true}),
+        "Indeed" => serde_json::json!({
+            "query": folded_query,
+            "country": country_code(&h.location).to_lowercase(),
+            "location": if h.work_mode == "Remote" { "remote" } else { h.location.as_str() },
+            "maxRows": max,
+            "remote": if h.work_mode == "Remote" { "remote" } else { "" },
+            "level": indeed_level(h),
+            "sort": "date",
+            "fromDays": indeed_from_days(h),
+            "enableUniqueJobs": true,
+            "includeSimilarJobs": false
+        }),
         "Wellfound" => serde_json::json!({"jobTitle": query, "keyword": h.include_keywords, "location": h.location, "remoteOnly": h.work_mode == "Remote", "experience": if h.seniority.to_lowercase().contains("senior") {"senior"} else {"any"}, "minSalary": min_salary_num(h), "includeNoSalary": true, "sort": "newest", "maxItems": h.max_items}),
-        "YC Startup Jobs" => serde_json::json!({"mode":"jobs", "queries":[query], "location": if h.work_mode == "Remote" {"remote"} else {""}, "scrapeOpenJobs": true, "maxItems": h.max_items}),
-        "Welcome to the Jungle" => serde_json::json!({"keyword": query, "location": h.location, "posted_within": posted_time_range(h), "results_wanted": h.max_items, "max_pages": 5}),
-        "HiringCafe" => serde_json::json!({"keyword": query, "location": h.location, "workplaceType": if h.work_mode == "Remote" {"Remote"} else {"Any"}, "maxItems": h.max_items, "flattenOutput": true, "enrichDescription": true}),
-        "We Work Remotely" => serde_json::json!({"category":"all", "results_wanted": h.max_items}),
-        "4 Day Week" => serde_json::json!({"mode":"search", "query": query, "category":"", "jobType":"", "maxItems": h.max_items}),
-        "FlexJobs" => serde_json::json!({"urls":[format!("https://www.flexjobs.com/search?search={}", query.replace(' ', "+"))], "ignore_url_failures": true, "max_items_per_url": h.max_items}),
+        "YC Startup Jobs" => serde_json::json!({"mode":"jobs", "queries":[folded_query], "location": if h.work_mode == "Remote" {"remote"} else {""}, "scrapeOpenJobs": true, "maxItems": h.max_items}),
+        "Welcome to the Jungle" => serde_json::json!({"keyword": folded_query, "location": country_code(&h.location), "posted_within": posted_time_range(h), "results_wanted": h.max_items, "max_pages": 5}),
+        "HiringCafe" => serde_json::json!({"keyword": folded_query, "location": h.location, "workplaceType": if h.work_mode == "Remote" {"Remote"} else {"Any"}, "maxItems": h.max_items, "flattenOutput": true, "enrichDescription": true}),
+        "We Work Remotely" => serde_json::json!({"searchTerm": query, "maxItems": max, "region": locs, "jobTypes": if h.work_mode == "Remote" { vec!["Full-Time"] } else { vec![] }, "minSalary": min_salary_num(h), "includeFullDescription": true, "cleanHTML": true}),
+        "FlexJobs" => serde_json::json!({"query": vec![folded_query], "limit": max, "location": locs, "remote": if h.work_mode == "Remote" { vec!["Remote"] } else { vec![] }}),
         "Himalayas" => serde_json::json!({"keywords": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(), "seniority": seniority_array(h), "employmentType":"Full Time", "worldwide": h.location.contains("Worldwide"), "country": if h.location.contains("Worldwide") {""} else {h.location.as_str()}, "sortBy":"recent", "maxResultsPerKeyword": h.max_items, "filterNonTech": false}),
-        "JustRemote" => serde_json::json!({"inputUrls":[format!("https://justremote.co/remote-jobs/search?search={}", query.replace(' ', "%20"))], "scrapeCompanyInfo": false, "maxResults": h.max_items, "enableCache": true}),
-        "Remotive" => serde_json::json!({"searchQueries":[query], "includeCompanyInfo": true, "maxResultsPerQuery": h.max_items, "maxResults": h.max_items}),
+        "Remotive" => serde_json::json!({"keywords": query, "location": h.location.clone(), "requireSalary": min_salary_num(h) > 0, "minSalary": min_salary_num(h), "publishedAfter": match h.posted_within.as_str() {"1 week" => (chrono::Utc::now() - chrono::Duration::days(7)).format("%Y-%m-%d").to_string(), "3 weeks" => (chrono::Utc::now() - chrono::Duration::days(21)).format("%Y-%m-%d").to_string(), "1 month" => (chrono::Utc::now() - chrono::Duration::days(31)).format("%Y-%m-%d").to_string(), _ => String::new() }, "maxResults": max}),
         _ => serde_json::json!({"query": query, "maxItems": h.max_items})
     }
 }
@@ -1072,17 +1135,25 @@ fn normalize_linkedin(v: &Value) -> HuntJob {
     j
 }
 fn normalize_indeed(v: &Value) -> HuntJob {
+    let loc = if let Some(o) = v.get("location").and_then(|x| x.as_object()) {
+        ["city", "state", "country", "countryCode"]
+            .iter()
+            .filter_map(|k| o.get(*k).and_then(|x| x.as_str()).map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else { alias(v, &["location", "formattedLocation", "jobLocation"]) };
     HuntJob {
-        title: alias(v, &["positionName","title"]), company: alias(v, &["company"]),
-        location: alias(v, &["location"]),
-        work_mode: String::new(), seniority: String::new(), experience: String::new(),
-        salary: alias(v, &["salary"]),
-        posted_date: String::new(),
-        apply_url: alias(v, &["url"]),
-        source_url: alias(v, &["url"]),
-        source_name: "Indeed".into(), actor_slug: "misceres/indeed-scraper".into(),
-        description: concise(alias(v, &["description","snippet","text"]), 1800),
-        requirements: vec![], skills: vec![],
+        title: alias(v, &["title", "jobTitle", "positionName", "position"]), company: alias(v, &["company", "companyName", "source"]),
+        location: loc,
+        work_mode: alias(v, &["remote", "workMode", "workArrangement", "jobType"]), seniority: alias(v, &["level", "jobLevel"]), experience: String::new(),
+        salary: alias(v, &["salary", "salaryText", "salaryRange", "estimatedSalary"]),
+        posted_date: alias(v, &["postedAt", "postedDate", "date", "publishedAt", "formattedRelativeTime"]),
+        apply_url: alias(v, &["url", "jobUrl", "jobURL", "applyUrl", "apply_url"]),
+        source_url: alias(v, &["url", "jobUrl", "jobURL", "applyUrl", "apply_url"]),
+        source_name: "Indeed".into(), actor_slug: "borderline/indeed-scraper".into(),
+        description: concise(alias(v, &["description", "jobDescription", "snippet", "text"]), 1800),
+        requirements: vec![], skills: listify(v, &["skills"]),
     }
 }
 fn normalize_wellfound(v: &Value) -> HuntJob {
@@ -1152,28 +1223,14 @@ fn normalize_hiring_cafe(v: &Value) -> HuntJob {
 fn normalize_we_work_remotely(v: &Value) -> HuntJob {
     HuntJob {
         title: alias(v, &["title"]), company: alias(v, &["company"]),
-        location: alias(v, &["location"]),
+        location: alias(v, &["region","location"]),
         work_mode: "Remote".into(), seniority: String::new(), experience: String::new(),
-        salary: alias_alt(v, &["salary"], &["min_salary","max_salary","currency"]),
-        posted_date: alias(v, &["date_posted"]),
-        apply_url: alias(v, &["apply_url","url"]),
-        source_url: alias(v, &["url"]),
-        source_name: "We Work Remotely".into(), actor_slug: "shahidirfan/weworkremotely-job-scrapper".into(),
-        description: concise(alias(v, &["description","text"]), 1800),
-        requirements: vec![], skills: vec![],
-    }
-}
-fn normalize_4_day_week(v: &Value) -> HuntJob {
-    HuntJob {
-        title: alias(v, &["title"]), company: alias(v, &["company"]),
-        location: alias(v, &["location"]),
-        work_mode: String::new(), seniority: String::new(), experience: String::new(),
         salary: alias(v, &["salary"]),
-        posted_date: alias(v, &["postedAt"]),
-        apply_url: alias(v, &["jobUrl","url"]),
-        source_url: alias(v, &["jobUrl","url"]),
-        source_name: "4 Day Week".into(), actor_slug: "crawlerbros/four-day-week-jobs-scraper".into(),
-        description: concise(alias(v, &["description","text"]), 1800),
+        posted_date: alias(v, &["date_posted"]),
+        apply_url: alias(v, &["apply_url","url","applyLink"]),
+        source_url: alias(v, &["apply_url","url","applyLink"]),
+        source_name: "We Work Remotely".into(), actor_slug: "crawlerbros/weworkremotely-job-scraper".into(),
+        description: concise(alias(v, &["description","descriptionHtml","text"]), 1800),
         requirements: vec![], skills: vec![],
     }
 }
@@ -1181,13 +1238,13 @@ fn normalize_flexjobs(v: &Value) -> HuntJob {
     HuntJob {
         title: alias(v, &["title"]), company: alias(v, &["company"]),
         location: alias_alt(v, &["job_locations"], &["allowed_candidate_location","locations"]),
-        work_mode: alias_alt(v, &["remote_options"], &["job_schedules"]),
-        seniority: String::new(), experience: String::new(),
-        salary: String::new(),
-        posted_date: alias(v, &["posted_date"]),
-        apply_url: alias(v, &["slug","url"]),
-        source_url: alias(v, &["slug","url"]),
-        source_name: "FlexJobs".into(), actor_slug: "stealth_mode/flexjobs-jobs-search-scraper".into(),
+        work_mode: alias_alt(v, &["remote","remote_options"], &["job_schedules"]),
+        seniority: alias(v, &["levels","career_levels"]), experience: String::new(),
+        salary: alias(v, &["salary"]),
+        posted_date: alias(v, &["posted_date","postedDate","date_posted"]),
+        apply_url: alias(v, &["slug","url","applyUrl"]),
+        source_url: alias(v, &["slug","url","applyUrl"]),
+        source_name: "FlexJobs".into(), actor_slug: "jupri/flexjobs-scraper".into(),
         description: concise(alias(v, &["description","job_summary"]), 1800),
         requirements: vec![], skills: vec![],
     }
@@ -1208,31 +1265,16 @@ fn normalize_himalayas(v: &Value) -> HuntJob {
         requirements: vec![], skills: listify(v, &["tags"]),
     }
 }
-fn normalize_just_remote(v: &Value) -> HuntJob {
-    let company = v.get("companyInfo").and_then(|c| c.get("Name")).and_then(|x| x.as_str()).unwrap_or("Not available").to_string();
-    HuntJob {
-        title: alias(v, &["Title"]), company,
-        location: String::new(),
-        work_mode: String::new(), seniority: String::new(), experience: String::new(),
-        salary: alias(v, &["Salary and Perks"]),
-        posted_date: String::new(),
-        apply_url: alias(v, &["Apply Link","URL"]),
-        source_url: alias(v, &["URL","Apply Link"]),
-        source_name: "JustRemote".into(), actor_slug: "kinaesthetic_millionaire/justremote".into(),
-        description: concise(alias(v, &["Description"]), 1800),
-        requirements: vec![], skills: vec![],
-    }
-}
 fn normalize_remotive(v: &Value) -> HuntJob {
     HuntJob {
         title: alias(v, &["title","name"]), company: alias(v, &["company","company_name"]),
-        location: alias(v, &["candidate_required_location","location"]),
+        location: alias(v, &["candidate_required_location","location","region"]),
         work_mode: "Remote".into(), seniority: String::new(), experience: String::new(),
-        salary: alias(v, &["salary"]),
+        salary: alias(v, &["salary","salary_range","min_salary"]),
         posted_date: alias(v, &["publication_date","date"]),
         apply_url: alias(v, &["url","apply_url"]),
         source_url: alias(v, &["url","apply_url"]),
-        source_name: "Remotive".into(), actor_slug: "santamaria-automations/remotive-scraper".into(),
+        source_name: "Remotive".into(), actor_slug: "unfenced-group/remotive-scraper".into(),
         description: concise(alias(v, &["description"]), 1800),
         requirements: vec![], skills: vec![],
     }
@@ -1264,10 +1306,8 @@ fn normalize_hunt_job(site: &str, v: &Value) -> HuntJob {
         "Welcome to the Jungle" => normalize_welcome_jungle(v),
         "HiringCafe" => normalize_hiring_cafe(v),
         "We Work Remotely" => normalize_we_work_remotely(v),
-        "4 Day Week" => normalize_4_day_week(v),
         "FlexJobs" => normalize_flexjobs(v),
         "Himalayas" => normalize_himalayas(v),
-        "JustRemote" => normalize_just_remote(v),
         "Remotive" => normalize_remotive(v),
         _ => normalize_generic(v),
     };
@@ -2096,7 +2136,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_hunt_profiles,save_hunt_config,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,rename_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url,resume::validate_resume,resume::convert_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
+pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,read_binary_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,open_project_file,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_hunt_profiles,save_hunt_config,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,rename_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url,resume::validate_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
 mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} }
