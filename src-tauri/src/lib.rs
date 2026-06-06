@@ -434,6 +434,20 @@ fn rename_project_path(input: RenamePathInput) -> Result<String, String> {
     let parent_canon = parent.canonicalize().map_err(|e| e.to_string())?;
     if !parent_canon.starts_with(&project_root_path) { return Err("Path escapes project workspace".into()); }
     fs::rename(&path, &target).map_err(|e| e.to_string())?;
+    // If this is a hunt folder, sync the slug in .hunt_config.json to the new folder name
+    if target.is_dir() {
+        let config_path = target.join(".hunt_config.json");
+        if config_path.exists() {
+            if let Ok(json) = fs::read_to_string(&config_path) {
+                if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&json) {
+                    config["slug"] = serde_json::Value::String(new_name.clone());
+                    if let Ok(new_json) = serde_json::to_string_pretty(&config) {
+                        let _ = fs::write(&config_path, new_json);
+                    }
+                }
+            }
+        }
+    }
     let rel_parent = Path::new(&input.path).parent().and_then(|p| p.to_str()).unwrap_or("");
     Ok(child_rel(rel_parent, &new_name))
 }
@@ -614,7 +628,7 @@ fn list_hunt_profiles(project_slug: String) -> Result<Vec<HuntProfileSummary>, S
         };
         profiles.push(HuntProfileSummary {
             name: config.name.clone(),
-            slug: config.slug.clone(),
+            slug: name.clone(),
             job_count: result.jobs.len(),
             run_count: result.runs.len(),
             last_run: config.last_run.clone(),
