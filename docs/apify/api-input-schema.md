@@ -8,7 +8,7 @@ Source: Apify public API `GET /v2/acts/{actor}` plus latest build `GET /v2/actor
 
 Table shows which HuntBrief settings each actor natively supports. ✅ = passed to actor API. 🔻 = post-filter only (actor doesn't support it). 🆕 = actor supports it but we haven't wired it yet.
 
-| HuntBrief Setting | 54CS | LinkedIn | Indeed | Wellfound | YC | WTTJ | HiringCafe | WWR | FlexJobs | Himalayas | Remotive |
+| HuntBrief Setting | 54CS | LinkedIn | Indeed | Wellfound (inactive) | YC | WTTJ | HiringCafe | WWR | FlexJobs (inactive) | Himalayas | Remotive |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | **Roles** | ✅ titleSearch | ✅ titleSearch | ✅ query | ✅ jobTitle | ✅ queries | ✅ keyword | ✅ keyword | ✅ searchTerm | ✅ query | ✅ keywords | ✅ keywords |
 | **Seniority** | 🆕 aiExperienceLevelFilter | 🆕 seniorityFilter | ✅ level³ | ✅ experience | 🔻 | 🔻 | 🔻 | 🔻 | ✅ levels | ✅ seniority | 🔻 |
@@ -23,6 +23,7 @@ Table shows which HuntBrief settings each actor natively supports. ✅ = passed 
 ¹ WTTJ `location` expects a 2-letter country code, not free text.  
 ² 54CS has a `remote only (legacy)` boolean field — not wired.
 ³ Indeed `level` works only on the US domain per actor docs.
+⁴ Wellfound and FlexJobs are **inactive** in HuntBrief — no longer selectable in UI and no backend routing. See `docs/apify/huntbrief-capability-matrix.md` for reasons. Schema notes preserved for future reactivation.
 
 🔻 = post-filter only: our code applies `post_filter_reason()` after the actor returns results. These are silent filters — you won't know a job was dropped unless you inspect `.hunt_result.json` run stats.
 
@@ -188,9 +189,11 @@ Borderline Indeed is a richer scraper than the previous Misceres actor: query, c
 
 LinkedIn has `seniorityFilter` that accepts multiple seniority levels — we should map HuntBrief seniority here instead of post-filtering. Same Fantastic Jobs API style as 54CS.
 
-## Wellfound
+## Wellfound [INACTIVE]
 
-- Mode: Standard
+This actor is inactive in HuntBrief. Live sample audit returned **0 items** for broad test queries. Schema notes kept for future reactivation.
+
+- Mode: Standard (inactive)
 - Actor: `crawlerbros/wellfound-scraper`
 - Required input fields: none declared
 
@@ -371,9 +374,11 @@ YC Startup Jobs actor has a fixed `role` enum (software-engineer, designer, prod
 
 Upgraded from shahidirfan (category-only) to crawlerbros — gains keyword search, region filter, job type, and salary range pre-filters.
 
-## FlexJobs
+## FlexJobs [INACTIVE]
 
-- Mode: Remote
+This actor is inactive in HuntBrief. Apify returns `full-permission-actor-not-approved` / 403 until the actor permission is approved. Schema notes kept for future reactivation.
+
+- Mode: Remote (inactive)
 - Actor: `jupri/flexjobs-scraper` (replaced `stealth_mode/flexjobs-jobs-search-scraper`)
 - 112 users · $5/1k results
 - Required input fields: none declared

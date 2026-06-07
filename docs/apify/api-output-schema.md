@@ -259,9 +259,11 @@ Common/declared output fields:
 
 ---
 
-## Wellfound
+## Wellfound [INACTIVE]
 
-- Mode: Standard
+This actor is inactive in HuntBrief. Live sample audit returned **0 items**. Schema notes kept for future reactivation.
+
+- Mode: Standard (inactive)
 - Actor: `crawlerbros/wellfound-scraper`
 - Declares `actorDefinition.output`: no
 - Declares dataset JSON schema fields: no
@@ -456,9 +458,11 @@ Common/declared output fields:
 
 ---
 
-## FlexJobs
+## FlexJobs [INACTIVE]
 
-- Mode: Remote
+This actor is inactive in HuntBrief. Apify returns `full-permission-actor-not-approved` / 403. Schema notes kept for future reactivation.
+
+- Mode: Remote (inactive)
 - Actor: `stealth_mode/flexjobs-jobs-search-scraper`
 - Declares `actorDefinition.output`: no
 - Declares dataset JSON schema fields: no

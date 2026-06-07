@@ -66,7 +66,6 @@ Standard:
 - 54 Career Sites — `fantastic-jobs/career-site-job-listing-api`
 - Indeed — `misceres/indeed-scraper`
 - LinkedIn — `fantastic-jobs/advanced-linkedin-job-search-api`
-- Wellfound — `crawlerbros/wellfound-scraper`
 - YC Startup Jobs — `memo23/y-combinator-scraper`
 - Welcome to the Jungle — `shahidirfan/jungle-job-scraper`
 
@@ -75,10 +74,14 @@ Remote:
 - HiringCafe — `memo23/apify-hiring-cafe-scraper`
 - We Work Remotely — `shahidirfan/weworkremotely-job-scrapper`
 - 4 Day Week — `crawlerbros/four-day-week-jobs-scraper`
-- FlexJobs — `stealth_mode/flexjobs-jobs-search-scraper`
 - Himalayas — `inlifeprojects/himalayas-jobs-scraper`
 - JustRemote — `kinaesthetic_millionaire/justremote`
 - Remotive — `santamaria-automations/remotive-scraper`
+
+Inactive (removed from HuntBrief UI/backend, docs preserved in `docs/apify/`):
+
+- **Wellfound** — `crawlerbros/wellfound-scraper` (returned 0 items in live sample audit)
+- **FlexJobs** — `jupri/flexjobs-scraper` (replaced `stealth_mode/flexjobs-jobs-search-scraper`; Apify 403 / full-permission-actor-not-approved)
 
 Developer schema helper scripts live in `docs/apify/`:
 

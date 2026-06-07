@@ -57,9 +57,85 @@ pub struct FilePathInput { pub project_slug: String, pub path: String }
 #[serde(rename_all = "camelCase")]
 pub struct SourceInput { pub project_slug: String, pub name: String, pub actor_name: String, pub mcp_server_url: Option<String>, pub input_template_json: String }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TavilyExtractInput {
+    pub urls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extract_depth: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_images: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TavilyExtractResult {
+    pub url: String,
+    pub title: Option<String>,
+    pub raw_content: Option<String>,
+    pub content: Option<String>,
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TavilyExtractFailure {
+    pub url: String,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TavilyExtractOutput {
+    pub results: Vec<TavilyExtractResult>,
+    #[serde(default)]
+    pub failed_results: Vec<TavilyExtractFailure>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ImportInput { pub project_slug: String, pub path: String }
+pub struct ImportJobLinksInput {
+    pub project_slug: String,
+    pub name: String,
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub run_id: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportLinkFile {
+    pub url: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    pub extracted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportLinkFailure {
+    pub url: String,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportJobLinksSummary {
+    pub submitted: usize,
+    pub extracted: usize,
+    pub written: usize,
+    pub failed: usize,
+    pub folder_path: String,
+    pub files: Vec<ImportLinkFile>,
+    pub failures: Vec<ImportLinkFailure>,
+}
+
+
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,13 +216,117 @@ pub struct TavilyStatus { pub connected: bool, pub detail: String, pub masked_ke
 #[serde(rename_all = "camelCase")]
 pub struct TavilyConnectInput { pub api_key: String }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HuntRunInput { pub project_slug: String, pub name: String, pub roles: Vec<String>, pub location: String, pub work_mode: String, pub seniority: String, pub experience: String, pub min_salary: String, pub include_keywords: String, pub exclude_keywords: String, pub posted_within: String, pub selected_sites: Vec<String>, pub max_items: usize }
+pub struct FirecrawlStatus { pub connected: bool, pub detail: String, pub masked_key: Option<String> }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunHuntApifyInput { #[serde(flatten)] pub hunt: HuntRunInput, pub results_path: String, pub run_id: String }
+pub struct FirecrawlConnectInput { pub api_key: String }
+
+// --- Firecrawl data structs for Import Links ---
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FirecrawlMetadata {
+    #[serde(default)]
+    pub title: Option<serde_json::Value>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FirecrawlScrapeResult {
+    pub success: bool,
+    pub data: Option<FirecrawlScrapeData>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FirecrawlScrapeData {
+    #[serde(default)]
+    pub markdown: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<FirecrawlMetadata>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FirecrawlBatchStart {
+    pub success: bool,
+    pub id: Option<String>,
+    #[serde(default)]
+    pub invalid_urls: Option<Vec<String>>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FirecrawlBatchStatus {
+    pub status: Option<String>,
+    pub total: Option<i64>,
+    pub completed: Option<i64>,
+    #[serde(default)]
+    pub credits_used: Option<i64>,
+    #[serde(default)]
+    pub next: Option<String>,
+    #[serde(default)]
+    pub data: Option<Vec<FirecrawlBatchPage>>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FirecrawlBatchPage {
+    #[serde(default)]
+    pub markdown: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<FirecrawlMetadata>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FirecrawlBatchErrors {
+    #[serde(default)]
+    pub errors: Option<Vec<FirecrawlBatchErrorItem>>,
+    #[serde(default)]
+    pub robots_blocked: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FirecrawlBatchErrorItem {
+    pub id: Option<String>,
+    pub url: Option<String>,
+    pub error: Option<String>,
+}
+
+// Normalized internal type for extraction results
+#[derive(Debug, Clone)]
+struct ImportedExtractPage {
+    pub original_url: String,
+    pub extract_url: String,
+    pub final_url: Option<String>,
+    pub title: Option<String>,
+    pub content: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HuntRunInput { pub project_slug: String, pub name: String, pub roles: Vec<String>, pub location: String, pub work_mode: String, #[serde(default)] pub seniority: String, #[serde(default)] pub experience: String, #[serde(default)] pub min_salary: String, pub include_keywords: String, #[serde(default)] pub exclude_keywords: String, pub posted_within: String, pub selected_sites: Vec<String>, pub max_items: usize }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunHuntApifyInput { #[serde(flatten)] pub hunt: HuntRunInput, pub results_path: String, pub run_id: String, #[serde(default)] pub is_re_run: bool }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -229,9 +409,7 @@ pub struct SourceConfig { pub id: String, pub project_slug: String, pub name: St
 #[serde(rename_all = "camelCase")]
 pub struct JobRecord { pub id: String, pub title: String, pub company: String, pub location: Option<String>, pub remote_type: String, pub description: Option<String>, pub salary_range: Option<String>, pub apply_url: String, pub source_url: String, pub source_type: String, pub dedupe_key: String, pub status: String, pub created_at: String }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportResult { pub imported: usize, pub skipped: usize, pub skipped_reasons: Vec<String> }
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -585,14 +763,10 @@ fn actor_slug_for_site(site: &str) -> &'static str {
         "54 Career Sites" => "fantastic-jobs/career-site-job-listing-api",
         "Indeed" => "borderline/indeed-scraper",
         "LinkedIn" => "fantastic-jobs/advanced-linkedin-job-search-api",
-        "Wellfound" => "crawlerbros/wellfound-scraper",
         "YC Startup Jobs" => "memo23/y-combinator-scraper",
         "Welcome to the Jungle" => "shahidirfan/jungle-job-scraper",
         "HiringCafe" => "memo23/apify-hiring-cafe-scraper",
-        "We Work Remotely" => "crawlerbros/weworkremotely-job-scraper",
-        "FlexJobs" => "jupri/flexjobs-scraper",
         "Himalayas" => "inlifeprojects/himalayas-jobs-scraper",
-        "Remotive" => "unfenced-group/remotive-scraper",
         _ => "unknown",
     }
 }
@@ -664,31 +838,32 @@ fn create_hunt_run(input: HuntRunInput) -> Result<HuntRunOutput, String> {
         return Ok(HuntRunOutput { folder_path: rel_folder.clone(), results_path: results_rel });
     }
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let effective = effective_hunt_for_sites(&input, &input.selected_sites);
     let now_ts = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
     let config = HuntConfig {
-        name: input.name.clone(),
+        name: effective.name.clone(),
         slug: slug.clone(),
         created: now_ts.clone(),
         last_run: None,
-        roles: input.roles.clone(),
-        location: input.location.clone(),
-        work_mode: input.work_mode.clone(),
-        seniority: input.seniority.clone(),
-        experience: input.experience.clone(),
-        min_salary: input.min_salary.clone(),
-        include_keywords: input.include_keywords.clone(),
-        exclude_keywords: input.exclude_keywords.clone(),
-        posted_within: input.posted_within.clone(),
-        selected_sites: input.selected_sites.clone(),
-        max_items: input.max_items,
+        roles: effective.roles.clone(),
+        location: effective.location.clone(),
+        work_mode: effective.work_mode.clone(),
+        seniority: effective.seniority.clone(),
+        experience: effective.experience.clone(),
+        min_salary: effective.min_salary.clone(),
+        include_keywords: effective.include_keywords.clone(),
+        exclude_keywords: effective.exclude_keywords.clone(),
+        posted_within: effective.posted_within.clone(),
+        selected_sites: effective.selected_sites.clone(),
+        max_items: effective.max_items,
     };
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(&config_path, json).map_err(|e| e.to_string())?;
     let empty_db = HuntResultDB { runs: vec![], jobs: HashMap::new() };
     fs::write(folder.join(".hunt_result.json"), serde_json::to_string_pretty(&empty_db).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let roles_md = input.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("
+    let roles_md = effective.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("
 ");
-    let actor_lines = input.selected_sites.iter().map(|s| format!("- {} -> `{}`", s, actor_slug_for_site(s))).collect::<Vec<_>>().join("
+    let actor_lines = effective.selected_sites.iter().map(|s| format!("- {} -> `{}`", s, actor_slug_for_site(s))).collect::<Vec<_>>().join("
 ");
     let results = format!("# Hunt Results
 
@@ -719,7 +894,7 @@ Created: {}
 
 This hunt run has been created. Results will appear in date-stamped `jobs-YYYY-MM-DD/` folders after each run.
 
-", input.name, now_ts, input.work_mode, input.max_items, input.location, input.posted_within, input.seniority, input.experience, input.min_salary, input.include_keywords, input.exclude_keywords, if roles_md.is_empty(){"- Not specified"}else{&roles_md}, if actor_lines.is_empty(){"- None"}else{&actor_lines});
+", effective.name, now_ts, effective.work_mode, effective.max_items, format_hunt_setting_value("location", &effective.location), format_hunt_setting_value("postedWithin", &effective.posted_within), format_hunt_setting_value("seniority", &effective.seniority), format_hunt_setting_value("experience", &effective.experience), format_hunt_setting_value("salary", &effective.min_salary), format_hunt_setting_value("includeKeywords", &effective.include_keywords), format_hunt_setting_value("excludeKeywords", &effective.exclude_keywords), if roles_md.is_empty(){"- Not specified".to_string()}else{roles_md}, if actor_lines.is_empty(){"- None".to_string()}else{actor_lines});
     fs::write(folder.join("results.md"), results).map_err(|e| e.to_string())?;
     Ok(HuntRunOutput { folder_path: rel_folder.clone(), results_path: results_rel })
 }
@@ -751,20 +926,13 @@ fn country_code(location: &str) -> String {
     else if l.contains("united states") || l.contains("usa") { "US".into() }
     else { "US".into() }
 }
-fn posted_time_range(h: &HuntRunInput) -> &'static str { match h.posted_within.as_str() { "1 week" => "7d", "3 weeks" | "1 month" => "30d", _ => "6m" } }
+fn posted_time_range(h: &HuntRunInput) -> &'static str { match h.posted_within.as_str() { "1 day" | "24 hours" => "24h", "1 week" => "7d", "3 weeks" | "1 month" => "30d", _ => "any" } }
 fn indeed_from_days(h: &HuntRunInput) -> &'static str { match h.posted_within.as_str() { "1 week" => "7", _ => "14" } }
-fn indeed_level(h: &HuntRunInput) -> &'static str {
-    let s = h.seniority.to_lowercase();
-    if s.contains("entry") || s.contains("intern") { "entry_level" }
-    else if s.contains("senior") || s.contains("director") || s.contains("executive") { "senior_level" }
-    else { "mid_level" }
-}
 fn fantastic_time_range(h: &HuntRunInput) -> &'static str { if h.posted_within == "1 week" { "7d" } else { "6m" } }
-fn min_salary_num(h: &HuntRunInput) -> i64 { h.min_salary.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse::<i64>().unwrap_or(0) * 1000 }
-fn seniority_array(h: &HuntRunInput) -> Vec<Value> {
-    let s = h.seniority.to_lowercase();
-    let label = if s.contains("entry") { "Entry-level" } else if s.contains("mid") || s.contains("associate") { "Mid-level" } else if s.contains("senior") { "Senior" } else { "Senior" };
-    vec![Value::String(label.into())]
+fn keyword_array_with_folded_include(h: &HuntRunInput) -> Vec<String> {
+    let mut out = h.roles.iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect::<Vec<_>>();
+    out.extend(include_keyword_terms(h));
+    out
 }
 
 fn include_keyword_terms(h: &HuntRunInput) -> Vec<String> {
@@ -781,75 +949,146 @@ fn query_with_folded_include(h: &HuntRunInput) -> String {
     }
     q
 }
-
-fn linkedin_seniority_filter(h: &HuntRunInput) -> Vec<Value> {
-    let s = h.seniority.to_lowercase();
-    let mut out = vec![];
-    if s.contains("entry") { out.push(Value::String("Internship".into())); out.push(Value::String("Entry level".into())); }
-    if s.contains("associate") { out.push(Value::String("Entry level".into())); }
-    if s.contains("mid") { out.push(Value::String("Mid-Senior level".into())); }
-    if s.contains("senior") && !s.contains("mid") { out.push(Value::String("Senior".into())); }
-    if s.contains("director") { out.push(Value::String("Director".into())); }
-    if s.contains("executive") { out.push(Value::String("Executive".into())); }
-    if out.is_empty() { vec![] } else { out }
+fn primary_role_query(h: &HuntRunInput) -> String {
+    h.roles.iter()
+        .map(|r| r.trim())
+        .find(|r| !r.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+fn yc_role_enum(h: &HuntRunInput) -> &'static str {
+    let q = hunt_roles_query(h).to_lowercase();
+    if q.contains("design") { "designer" }
+    else if q.contains("product") { "product-manager" }
+    else if q.contains("operation") { "operations" }
+    else if q.contains("marketing") { "marketing" }
+    else if q.contains("sales") { "sales-manager" }
+    else if q.contains("recruit") || q.contains("hr") { "recruiting-hr" }
+    else if q.contains("support") { "support" }
+    else if q.contains("science") || q.contains("scientist") { "science" }
+    else if q.contains("engineer") || q.contains("developer") || q.contains("backend") || q.contains("frontend") || q.contains("full stack") || q.contains("fullstack") || q.contains("ai") || q.contains("ml") { "software-engineer" }
+    else { "" }
+}
+fn yc_location_enum(h: &HuntRunInput) -> &'static str {
+    let l = h.location.to_lowercase();
+    if h.work_mode == "Remote" || l.contains("remote") { "remote" }
+    else if l.contains("san francisco") || l == "sf" { "san-francisco" }
+    else if l.contains("new york") || l == "nyc" { "new-york" }
+    else if l.contains("los angeles") || l == "la" { "los-angeles" }
+    else if l.contains("seattle") { "seattle" }
+    else if l.contains("austin") { "austin" }
+    else if l.contains("chicago") { "chicago" }
+    else if l.contains("india") { "india" }
+    else { "" }
 }
 
-fn fantastic_experience_filter(h: &HuntRunInput) -> Vec<Value> {
-    let s = h.experience.to_lowercase();
-    let mut out = vec![];
-    if s.contains("0–1") || s.contains("0-1") { out.push(Value::String("0-1".into())); }
-    if s.contains("1–3") || s.contains("1-3") { out.push(Value::String("1-3".into())); }
-    if s.contains("3–5") || s.contains("3-5") { out.push(Value::String("3-5".into())); }
-    if s.contains("5–8") || s.contains("5-8") || s.contains("8+") { out.push(Value::String("5+".into())); }
+// Reusable HuntBrief capability helpers (mirrors frontend ACTOR_CAPABILITIES)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActorFieldCapability { Api, PostFilter, Unsupported }
+
+fn actor_field_capability(site: &str, field: &str) -> ActorFieldCapability {
+    let (api, post_filter): (&[&str], &[&str]) = match site {
+        "54 Career Sites" | "LinkedIn" | "Indeed" => (&["roles","location","postedWithin","includeKeywords"], &[]),
+        "YC Startup Jobs" => (&["roles","location"], &["includeKeywords"]),
+        "Welcome to the Jungle" => (&["roles","location","postedWithin"], &["includeKeywords"]),
+        "HiringCafe" => (&["roles","location"], &["includeKeywords"]),
+        "Himalayas" => (&["roles","location"], &["includeKeywords"]),
+        _ => (&[], &[]),
+    };
+    if api.contains(&field) { ActorFieldCapability::Api }
+    else if post_filter.contains(&field) { ActorFieldCapability::PostFilter }
+    else { ActorFieldCapability::Unsupported }
+}
+fn field_is_usable(site: &str, field: &str) -> bool {
+    !matches!(actor_field_capability(site, field), ActorFieldCapability::Unsupported)
+}
+fn field_is_api_supported(site: &str, field: &str) -> bool {
+    matches!(actor_field_capability(site, field), ActorFieldCapability::Api)
+}
+fn neutralize_field(out: &mut HuntRunInput, field: &str) {
+    match field {
+        "roles" => out.roles = vec![],
+        "includeKeywords" => out.include_keywords = String::new(),
+        "postedWithin" => out.posted_within = String::new(),
+        "location" => out.location = "Worldwide".into(),
+        _ => {}
+    }
+}
+fn effective_hunt_for_sites(h: &HuntRunInput, sites: &[String]) -> HuntRunInput {
+    if sites.is_empty() { return h.clone(); }
+    let mut out = h.clone();
+    let fields: &[&str] = &["roles","includeKeywords","postedWithin","location"];
+    for &field in fields {
+        if !sites.iter().any(|s| field_is_usable(s, field)) {
+            neutralize_field(&mut out, field);
+        }
+    }
+    out
+}
+fn effective_hunt_for_site_for_api(h: &HuntRunInput, site: &str) -> HuntRunInput {
+    let mut out = h.clone();
+    for &field in &["roles","includeKeywords","postedWithin","location"] {
+        if !field_is_api_supported(site, field) {
+            neutralize_field(&mut out, field);
+        }
+    }
     out
 }
 
+fn format_hunt_setting_value(key: &str, value: &str) -> String {
+    if value.is_empty() || value == "Any" || value == "Worldwide" || value == "Standard" {
+        match key {
+            "postedWithin" | "includeKeywords" | "seniority" | "experience" | "excludeKeywords" => "Not specified".to_string(),
+            "min_salary" | "salary" => "Any".to_string(),
+            "location" => "Worldwide".to_string(),
+            "work_mode" | "workMode" => "Standard".to_string(),
+            _ => value.to_string(),
+        }
+    } else {
+        value.to_string()
+    }
+}
+
 fn build_actor_input(site: &str, h: &HuntRunInput) -> Value {
-    let query = hunt_roles_query(h);
     let folded_query = query_with_folded_include(h);
     let include = csv_words(&h.include_keywords);
-    let exclude = csv_words(&h.exclude_keywords);
     let locs = location_terms(h);
+    let wttj_country_code = if h.location == "Worldwide" { String::new() } else { country_code(&h.location) };
     let max = h.max_items.max(10);
     match site {
         "54 Career Sites" => serde_json::json!({
             "timeRange": fantastic_time_range(h), "limit": max, "includeAi": true,
             "titleSearch": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(),
-            "titleExclusionSearch": exclude, "descriptionExclusionSearch": csv_words(&h.exclude_keywords),
             "locationSearch": locs, "descriptionSearch": include,
-            "descriptionType": "text",
-            "aiExperienceLevelFilter": fantastic_experience_filter(h),
-            "remote only (legacy)": h.work_mode == "Remote"
+            "descriptionType": "text"
         }),
         "LinkedIn" => serde_json::json!({
             "timeRange": fantastic_time_range(h), "limit": max, "includeAi": true,
             "titleSearch": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(),
-            "titleExclusionSearch": exclude, "descriptionExclusionSearch": csv_words(&h.exclude_keywords),
             "locationSearch": locs, "descriptionSearch": include,
-            "descriptionType": "text", "remote": h.work_mode == "Remote",
-            "seniorityFilter": linkedin_seniority_filter(h)
+            "descriptionType": "text", "remote": h.work_mode == "Remote"
         }),
-        "Indeed" => serde_json::json!({
-            "query": folded_query,
-            "country": country_code(&h.location).to_lowercase(),
-            "location": if h.work_mode == "Remote" { "remote" } else { h.location.as_str() },
-            "maxRows": max,
-            "remote": if h.work_mode == "Remote" { "remote" } else { "" },
-            "level": indeed_level(h),
-            "sort": "date",
-            "fromDays": indeed_from_days(h),
-            "enableUniqueJobs": true,
-            "includeSimilarJobs": false
-        }),
-        "Wellfound" => serde_json::json!({"jobTitle": query, "keyword": h.include_keywords, "location": h.location, "remoteOnly": h.work_mode == "Remote", "experience": if h.seniority.to_lowercase().contains("senior") {"senior"} else {"any"}, "minSalary": min_salary_num(h), "includeNoSalary": true, "sort": "newest", "maxItems": h.max_items}),
-        "YC Startup Jobs" => serde_json::json!({"mode":"jobs", "queries":[folded_query], "location": if h.work_mode == "Remote" {"remote"} else {""}, "scrapeOpenJobs": true, "maxItems": h.max_items}),
-        "Welcome to the Jungle" => serde_json::json!({"keyword": folded_query, "location": country_code(&h.location), "posted_within": posted_time_range(h), "results_wanted": h.max_items, "max_pages": 5}),
-        "HiringCafe" => serde_json::json!({"keyword": folded_query, "location": h.location, "workplaceType": if h.work_mode == "Remote" {"Remote"} else {"Any"}, "maxItems": h.max_items, "flattenOutput": true, "enrichDescription": true}),
-        "We Work Remotely" => serde_json::json!({"searchTerm": query, "maxItems": max, "region": locs, "jobTypes": if h.work_mode == "Remote" { vec!["Full-Time"] } else { vec![] }, "minSalary": min_salary_num(h), "includeFullDescription": true, "cleanHTML": true}),
-        "FlexJobs" => serde_json::json!({"query": vec![folded_query], "limit": max, "location": locs, "remote": if h.work_mode == "Remote" { vec!["Remote"] } else { vec![] }}),
-        "Himalayas" => serde_json::json!({"keywords": h.roles.iter().filter(|r| !r.trim().is_empty()).cloned().collect::<Vec<_>>(), "seniority": seniority_array(h), "employmentType":"Full Time", "worldwide": h.location.contains("Worldwide"), "country": if h.location.contains("Worldwide") {""} else {h.location.as_str()}, "sortBy":"recent", "maxResultsPerKeyword": h.max_items, "filterNonTech": false}),
-        "Remotive" => serde_json::json!({"keywords": query, "location": h.location.clone(), "requireSalary": min_salary_num(h) > 0, "minSalary": min_salary_num(h), "publishedAfter": match h.posted_within.as_str() {"1 week" => (chrono::Utc::now() - chrono::Duration::days(7)).format("%Y-%m-%d").to_string(), "3 weeks" => (chrono::Utc::now() - chrono::Duration::days(21)).format("%Y-%m-%d").to_string(), "1 month" => (chrono::Utc::now() - chrono::Duration::days(31)).format("%Y-%m-%d").to_string(), _ => String::new() }, "maxResults": max}),
-        _ => serde_json::json!({"query": query, "maxItems": h.max_items})
+        "Indeed" => {
+            let mut input = serde_json::json!({
+                "query": folded_query,
+                "country": country_code(&h.location).to_lowercase(),
+                "location": if h.work_mode == "Remote" { "remote" } else { h.location.as_str() },
+                "maxRows": max,
+                "sort": "date",
+                "fromDays": indeed_from_days(h),
+                "enableUniqueJobs": true,
+                "includeSimilarJobs": false
+            });
+            if h.work_mode == "Remote" {
+                input["remote"] = serde_json::json!("remote");
+            }
+            input
+        },
+        "YC Startup Jobs" => serde_json::json!({"mode":"jobs", "role": yc_role_enum(h), "location": yc_location_enum(h), "maxItems": h.max_items}),
+        "Welcome to the Jungle" => serde_json::json!({"keyword": primary_role_query(h), "countryCode": wttj_country_code, "posted_within": posted_time_range(h), "results_wanted": h.max_items, "max_pages": 5}),
+        "HiringCafe" => serde_json::json!({"keyword": primary_role_query(h), "location": if h.location == "Worldwide" { "" } else { h.location.as_str() }, "workplaceType": if h.work_mode == "Remote" {"Remote"} else {"Any"}, "maxItems": h.max_items, "flattenOutput": true, "enrichDescription": true}),
+        "Himalayas" => serde_json::json!({"keywords": h.roles.iter().map(|r| r.trim()).filter(|r| !r.is_empty()).collect::<Vec<_>>(), "employmentType":"Full Time", "worldwide": h.location.contains("Worldwide"), "country": if h.location.contains("Worldwide") {""} else {h.location.as_str()}, "sortBy":"recent", "maxResultsPerKeyword": h.max_items, "filterNonTech": false}),
+        _ => serde_json::json!({"query": folded_query, "maxItems": h.max_items})
     }
 }
 
@@ -865,6 +1104,7 @@ fn curl_json(method: &str, url: &str, token: &str, body: Option<&Value>) -> Resu
 
 fn run_actor_api(site: &str, actor_slug: &str, h: &HuntRunInput, token: &str, run_id: &str, ch: &Channel<AgentRunEvent>) -> Result<Vec<Value>, String> {
     let input = build_actor_input(site, h);
+    emit_event_payload(ch, run_id, "debug", format!("{site}: actor API input"), input.clone());
     emit_event(ch, run_id, "status", format!("Starting {site} actor"));
     let url = format!("https://api.apify.com/v2/acts/{}/runs", actor_api_slug(actor_slug));
     let started = curl_json("POST", &url, token, Some(&input))?;
@@ -921,8 +1161,745 @@ fn job_file_name(idx: usize, j: &HuntJob) -> String {
     format!("{:03}-{}-{}.md", idx, if title.is_empty(){"job"}else{&title}, if company.is_empty(){"company"}else{&company})
 }
 
+// --- Import link helpers ---
+
+fn valid_import_url(url: &str) -> bool {
+    let url = url.trim();
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+fn dedupe_import_urls(urls: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for url in urls {
+        let trimmed = url.trim().to_string();
+        if valid_import_url(&trimmed) && seen.insert(trimmed.clone()) {
+            result.push(trimmed);
+        }
+    }
+    result
+}
+
+#[derive(Debug, Clone)]
+struct ImportedJobDraft {
+    title: String,
+    company: String,
+    location: String,
+    salary: String,
+    posted: String,
+    deadline: String,
+    description: String,
+}
+
+fn clean_import_line(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string()
+}
+
+fn import_title_from_content(url: &str, content: &str) -> String {
+    for line in content.lines() {
+        let trimmed = clean_import_line(line);
+        if !trimmed.is_empty() && trimmed.len() < 200 && !is_import_noise_line(&trimmed) {
+            return trimmed.chars().take(120).collect();
+        }
+    }
+    let url_path = url.split('/').filter(|s| !s.is_empty()).last().unwrap_or(url);
+    url_path.replace('-', " ").replace('_', " ").chars().take(80).collect()
+}
+
+fn domain_from_url(url: &str) -> String {
+    let without_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let host = without_scheme.split('/').next().unwrap_or("");
+    host.trim_start_matches("www.").split('.').next().unwrap_or("").replace('-', " ")
+}
+
+fn title_from_page_title(page_title: &str) -> String {
+    let base = page_title.split('|').next().unwrap_or(page_title).trim();
+    for sep in [" hiring ", " at ", " - ", " | "] {
+        if let Some((_, rhs)) = base.split_once(sep) {
+            let title = rhs.rsplit_once(" in ").map(|(t, _)| t).unwrap_or(rhs).trim();
+            if !title.is_empty() { return title.chars().take(120).collect(); }
+        }
+    }
+    base.chars().take(120).collect()
+}
+
+fn imported_content_lines(content: &str) -> Vec<String> {
+    content.lines().map(clean_import_line).filter(|l| !l.is_empty()).collect()
+}
+
+fn is_import_noise_line(line: &str) -> bool {
+    let l = line.to_lowercase();
+    [
+        "join or sign in", "new to linkedin", "by clicking continue", "user agreement", "privacy policy",
+        "cookie policy", "save", "report this job", "see who you know", "sign in to create job alert",
+        "linkedin is better on the app", "don't have the app", "open the app", "get the app",
+        "find curated posts", "never miss a job alert", "referrals increase your chances",
+    ].iter().any(|needle| l.contains(needle))
+}
+
+fn is_import_stop_line(line: &str) -> bool {
+    let l = line.to_lowercase();
+    [
+        "similar jobs", "people also viewed", "explore top content", "know when new jobs open up", "get notified about new",
+        "where to apply", "share this page", "jobs & opportunities", "useful information", "legal information", "follow us",
+    ].iter().any(|needle| l.contains(needle))
+}
+
+fn import_label_value(lines: &[String], label: &str) -> String {
+    let label_l = label.to_lowercase();
+    let known_labels = [
+        "organisation/company", "organization/company", "department", "research field", "researcher profile", "positions",
+        "application deadline", "country", "type of contract", "job status", "hours per week", "offer description",
+        "city", "website", "street", "postal code", "e-mail", "contact", "work location(s)", "company/institute",
+    ];
+    for (i, line) in lines.iter().enumerate() {
+        if line.to_lowercase() == label_l {
+            for value in lines.iter().skip(i + 1).take(4) {
+                let lower = value.to_lowercase();
+                if value.is_empty() || known_labels.contains(&lower.as_str()) { continue; }
+                return value.clone();
+            }
+        }
+    }
+    String::new()
+}
+
+fn extract_relative_posted(line: &str) -> String {
+    let words = line.split_whitespace().collect::<Vec<_>>();
+    for i in 0..words.len() {
+        let w = words[i].trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+        if ["minute", "minutes", "hour", "hours", "day", "days", "week", "weeks", "month", "months", "year", "years"].contains(&w.as_str()) && i + 1 < words.len() && words[i + 1].eq_ignore_ascii_case("ago") {
+            let prev = if i > 0 { words[i - 1].trim_matches(|c: char| !c.is_alphanumeric()) } else { "" };
+            if !prev.is_empty() {
+                return format!("{} {} ago", prev, words[i].trim_matches(|c: char| !c.is_alphanumeric()));
+            }
+        }
+    }
+    String::new()
+}
+
+fn extract_salary(lines: &[String]) -> String {
+    for line in lines.iter().take(80) {
+        let has_currency = line.contains('$') || line.contains('£') || line.contains('€');
+        let has_digit = line.chars().any(|c| c.is_ascii_digit());
+        if has_currency && has_digit && line.len() <= 180 {
+            return line.chars().take(160).collect();
+        }
+    }
+    String::new()
+}
+
+fn clean_import_description(lines: &[String]) -> String {
+    let priority_markers = ["offer description", "job description", "description", "about ", "the role"];
+    let fallback_markers = ["what you", "responsibilities", "requirements", "essential qualifications"];
+    let mut start_idx = None;
+    for marker in priority_markers {
+        if let Some(i) = lines.iter().position(|line| line.to_lowercase().starts_with(marker)) {
+            start_idx = Some(i);
+            break;
+        }
+    }
+    if start_idx.is_none() {
+        for marker in fallback_markers {
+            if let Some(i) = lines.iter().position(|line| line.to_lowercase().starts_with(marker)) {
+                start_idx = Some(i);
+                break;
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for line in lines.iter().skip(start_idx.unwrap_or(0)) {
+        if is_import_stop_line(line) { break; }
+        if is_import_noise_line(line) { continue; }
+        out.push(line.clone());
+    }
+    let desc = out.join("\n");
+    let desc = desc.chars().take(12000).collect::<String>().trim().to_string();
+    if desc.is_empty() { "No extracted job description was returned. Use the original URL for additional context.".into() } else { desc }
+}
+
+fn parse_imported_job(_original_url: &str, extract_url: &str, page_title: Option<&str>, content: &str) -> ImportedJobDraft {
+    let lines = imported_content_lines(content);
+    let mut title = page_title.map(title_from_page_title).unwrap_or_default();
+    let mut company = String::new();
+    let mut location = String::new();
+    let mut posted = String::new();
+
+    if extract_url.contains("linkedin.com") {
+        if let Some(pt) = page_title {
+            let base = pt.split('|').next().unwrap_or(pt).trim();
+            if let Some((co, rest)) = base.split_once(" hiring ") {
+                company = co.trim().to_string();
+                if let Some((t, loc)) = rest.rsplit_once(" in ") {
+                    title = t.trim().to_string();
+                    location = loc.trim().to_string();
+                }
+            }
+        }
+        if title.is_empty() { title = lines.first().cloned().unwrap_or_default(); }
+        if company.is_empty() || location.is_empty() {
+            if let Some(line) = lines.get(1) {
+                if company.is_empty() {
+                    let title_words = title.split_whitespace().count();
+                    let parts = line.split_whitespace().collect::<Vec<_>>();
+                    if parts.len() > title_words.min(3) {
+                        company = parts.first().unwrap_or(&"").to_string();
+                    }
+                }
+                if location.is_empty() && !company.is_empty() {
+                    location = line.strip_prefix(&company).unwrap_or(line).trim().to_string();
+                }
+            }
+        }
+    }
+
+    if title.is_empty() { title = import_title_from_content(extract_url, content); }
+
+    let labeled_company = import_label_value(&lines, "Organisation/Company");
+    if company.is_empty() && !labeled_company.is_empty() { company = labeled_company; }
+    let deadline = import_label_value(&lines, "Application Deadline");
+    let country = import_label_value(&lines, "Country");
+    let city = import_label_value(&lines, "City");
+    if location.is_empty() {
+        location = match (city.is_empty(), country.is_empty()) {
+            (false, false) => format!("{city}, {country}"),
+            (false, true) => city,
+            (true, false) => country,
+            (true, true) => String::new(),
+        };
+    }
+    if company.is_empty() { company = domain_from_url(extract_url); }
+    for line in lines.iter().take(40) {
+        if posted.is_empty() { posted = extract_relative_posted(line); }
+        if location.is_empty() && (line.contains(", ") || line.eq_ignore_ascii_case("remote")) && line.len() < 140 && !line.contains("http") {
+            location = line.clone();
+        }
+        if !posted.is_empty() && !location.is_empty() { break; }
+    }
+
+    ImportedJobDraft {
+        title: title.trim().chars().take(120).collect(),
+        company: company.trim().chars().take(120).collect(),
+        location: location.trim().chars().take(160).collect(),
+        salary: extract_salary(&lines),
+        posted,
+        deadline,
+        description: clean_import_description(&lines),
+    }
+}
+
+fn query_param(url: &str, name: &str) -> Option<String> {
+    let query = url.split_once('?')?.1.split_once('#').map(|(q, _)| q).unwrap_or_else(|| url.split_once('?').unwrap().1);
+    for part in query.split('&') {
+        let (key, value) = part.split_once('=').unwrap_or((part, ""));
+        if key == name && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn canonical_import_url(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches(|c| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']'));
+    if trimmed.contains("linkedin.com/jobs/search") {
+        if let Some(id) = query_param(trimmed, "currentJobId") {
+            return format!("https://www.linkedin.com/jobs/view/{id}");
+        }
+    }
+    trimmed.to_string()
+}
+
+fn import_source_name(url: &str) -> &'static str {
+    if url.contains("linkedin.com") { "LinkedIn Import" } else { "Imported Link" }
+}
+
+fn import_link_file_name(idx: usize, url: &str) -> String {
+    let slug = slugify(url.split('/').filter(|s| !s.is_empty()).last().unwrap_or("link"));
+    let safe_slug = if slug.is_empty() { "link".to_string() } else { slug };
+    format!("{:03}-{}.md", idx, safe_slug.chars().take(48).collect::<String>())
+}
+
+fn import_link_markdown(original_url: &str, extract_url: &str, job: &ImportedJobDraft) -> String {
+    let title = if job.title.is_empty() { "Imported job" } else { &job.title };
+    let title_line = if job.company.is_empty() { title.to_string() } else { format!("{title} — {}", job.company) };
+    let source = import_source_name(extract_url);
+    format!("# {title_line}\n\n## Job Metadata\n\n- Source: {source}\n- Company: {company}\n- Location: {location}\n- Salary: {salary}\n- Posted: {posted}\n- Deadline: {deadline}\n- Apply: {extract_url}\n- Original URL: {original_url}\n\n## Description\n\n{description}\n",
+        company = job.company,
+        location = job.location,
+        salary = job.salary,
+        posted = job.posted,
+        deadline = job.deadline,
+        description = job.description)
+}
+
+// --- Firecrawl Import Link helpers ---
+
+fn firecrawl_scrape_options_body() -> serde_json::Value {
+    serde_json::json!({
+        "formats": ["markdown"],
+        "onlyMainContent": true,
+        "onlyCleanContent": true,
+        "timeout": 60000,
+        "proxy": "auto",
+        "blockAds": true,
+        "removeBase64Images": true
+    })
+}
+
+fn execute_firecrawl_request(method: &str, endpoint: &str, key: &str, body: Option<&serde_json::Value>) -> Result<(serde_json::Value, bool), String> {
+    let url = if endpoint.starts_with('/') {
+        format!("https://api.firecrawl.dev/v2{}", endpoint)
+    } else {
+        // endpoint is already a full URL (e.g. for batch pagination "next")
+        endpoint.to_string()
+    };
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args(["-sS", "--max-time", "90", "--connect-timeout", "10", "-X", method, &url,
+        "-H", &format!("Authorization: Bearer {key}"),
+        "-H", "Content-Type: application/json"]);
+    if let Some(b) = body {
+        cmd.arg("--data").arg(serde_json::to_string(b).map_err(|e| e.to_string())?);
+    }
+    let out = cmd.output().map_err(|e| format!("Firecrawl request failed: {e}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = format!("{}{}", stdout, stderr);
+    let http_ok = out.status.success();
+    let v: serde_json::Value = serde_json::from_str(&stdout).map_err(|e| format!("Firecrawl response parse: {e}; body: {}", text.chars().take(200).collect::<String>()))?;
+    Ok((v, http_ok))
+}
+
+fn firecrawl_scrape_url(key: &str, url: &str, on_event: &Channel<AgentRunEvent>, run_id: &str) -> Result<ImportedExtractPage, String> {
+    let opts = firecrawl_scrape_options_body();
+    let body = serde_json::json!({
+        "url": url,
+        "formats": opts["formats"],
+        "onlyMainContent": opts["onlyMainContent"],
+        "onlyCleanContent": opts["onlyCleanContent"],
+        "timeout": opts["timeout"],
+        "proxy": opts["proxy"],
+        "blockAds": opts["blockAds"],
+        "removeBase64Images": opts["removeBase64Images"]
+    });
+
+    let (v, http_ok) = execute_firecrawl_request("POST", "/scrape", key, Some(&body))?;
+
+    let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+    if !success || !http_ok {
+        let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Unknown Firecrawl scrape error").to_string();
+        return Ok(ImportedExtractPage {
+            original_url: url.to_string(),
+            extract_url: url.to_string(),
+            final_url: None,
+            title: None,
+            content: String::new(),
+            error: Some(err),
+        });
+    }
+
+    let markdown = v.pointer("/data/markdown").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let title = v.pointer("/data/metadata/title").and_then(|x| match x {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Array(arr) => arr.first().and_then(|v| v.as_str().map(|s| s.to_string())),
+        _ => None,
+    });
+    let final_url = v.pointer("/data/metadata/url").and_then(|x| x.as_str()).map(|s| s.to_string());
+    let source_url = v.pointer("/data/metadata/sourceURL").and_then(|x| x.as_str()).map(|s| s.to_string());
+
+    emit_event(on_event, run_id, "debug", format!("Firecrawl scrape OK: url={:?}, title={:?}, content_len={}", final_url.as_deref().unwrap_or(url), title, markdown.len()));
+
+    Ok(ImportedExtractPage {
+        original_url: url.to_string(),
+        extract_url: source_url.unwrap_or_else(|| url.to_string()),
+        final_url,
+        title,
+        content: markdown,
+        error: None,
+    })
+}
+
+fn firecrawl_start_batch_scrape(key: &str, urls: &[String], on_event: &Channel<AgentRunEvent>, run_id: &str) -> Result<String, String> {
+    let opts = firecrawl_scrape_options_body();
+    let body = serde_json::json!({
+        "urls": urls,
+        "formats": opts["formats"],
+        "onlyMainContent": opts["onlyMainContent"],
+        "onlyCleanContent": opts["onlyCleanContent"],
+        "timeout": opts["timeout"],
+        "proxy": opts["proxy"],
+        "blockAds": opts["blockAds"],
+        "removeBase64Images": opts["removeBase64Images"],
+        "ignoreInvalidURLs": true
+    });
+
+    let (v, http_ok) = execute_firecrawl_request("POST", "/batch/scrape", key, Some(&body))?;
+
+    if !http_ok {
+        let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Unknown batch scrape error").to_string();
+        return Err(format!("Firecrawl batch scrape failed: {err}"));
+    }
+
+    let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
+    if !success {
+        let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Unknown batch scrape error").to_string();
+        return Err(format!("Firecrawl batch scrape not successful: {err}"));
+    }
+
+    let batch_id = v.get("id").and_then(|x| x.as_str()).ok_or("Firecrawl batch scrape did not return an id")?.to_string();
+
+    // Emit invalid URLs if any
+    if let Some(invalid) = v.get("invalidURLs").and_then(|x| x.as_array()) {
+        if !invalid.is_empty() {
+            let invalid_strs: Vec<String> = invalid.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+            emit_event(on_event, run_id, "debug", format!("Firecrawl invalid URLs: {}", invalid_strs.join(", ")));
+        }
+    }
+
+    Ok(batch_id)
+}
+
+fn firecrawl_poll_batch_scrape(key: &str, batch_id: &str, url_mappings: &[(String, String)], on_event: &Channel<AgentRunEvent>, run_id: &str) -> Result<Vec<ImportedExtractPage>, String> {
+    let endpoint = format!("/batch/scrape/{}", batch_id);
+    let max_polls = 60;
+    let mut all_pages: Vec<ImportedExtractPage> = Vec::new();
+
+    for poll in 0..max_polls {
+        thread::sleep(Duration::from_secs(2));
+
+        let (v, http_ok) = execute_firecrawl_request("GET", &endpoint, key, None)?;
+
+        if !http_ok {
+            let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Unknown batch status error").to_string();
+            emit_event(on_event, run_id, "debug", format!("Firecrawl batch status HTTP error: {err}"));
+            if poll >= 5 {
+                return Err(format!("Firecrawl batch status failed after {} polls: {err}", poll + 1));
+            }
+            continue;
+        }
+
+        let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("unknown").to_string();
+        let completed = v.get("completed").and_then(|x| x.as_i64()).unwrap_or(0);
+        let total = v.get("total").and_then(|x| x.as_i64()).unwrap_or(0);
+
+        emit_event(on_event, run_id, "status", format!("Firecrawl batch: {status} ({completed}/{total})"));
+
+        // Collect data from current response (including "next" pages)
+        all_pages.append(&mut firecrawl_collect_batch_data(&v, url_mappings));
+
+        // Follow next pages if present
+        if let Some(next_url) = v.get("next").and_then(|x| x.as_str()).map(|s| s.to_string()) {
+            emit_event(on_event, run_id, "debug", "Firecrawl batch fetching next page");
+            let next_result = firecrawl_fetch_batch_next(key, &next_url, url_mappings);
+            if let Ok(mut more_pages) = next_result {
+                all_pages.append(&mut more_pages);
+            }
+        }
+
+        if status == "completed" {
+            if let Some(credits) = v.get("creditsUsed").and_then(|x| x.as_i64()) {
+                emit_event(on_event, run_id, "debug", format!("Firecrawl batch completed: {completed}/{total} pages, credits used: {credits}"));
+            } else {
+                emit_event(on_event, run_id, "debug", format!("Firecrawl batch completed: {completed}/{total} pages"));
+            }
+            break;
+        }
+
+        if status == "failed" {
+            let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Batch scrape failed").to_string();
+            emit_event(on_event, run_id, "debug", format!("Firecrawl batch failed: {err}"));
+            // Try to get batch errors for diagnostics
+            if let Ok(errors_result) = firecrawl_get_batch_errors(key, batch_id) {
+                for err_item in errors_result {
+                    emit_event(on_event, run_id, "debug", format!("Firecrawl batch error detail: url={:?}, error={:?}", err_item.url, err_item.error));
+                }
+            }
+            return Err(err);
+        }
+    }
+
+    Ok(all_pages)
+}
+
+fn firecrawl_collect_batch_data(v: &serde_json::Value, url_mappings: &[(String, String)]) -> Vec<ImportedExtractPage> {
+    let mut pages = Vec::new();
+    if let Some(data) = v.get("data").and_then(|x| x.as_array()) {
+        for item in data {
+            let markdown = item.get("markdown").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let page_title = item.pointer("/metadata/title").and_then(|x| match x {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Array(arr) => arr.first().and_then(|v| v.as_str().map(|s| s.to_string())),
+                _ => None,
+            });
+            let final_url = item.pointer("/metadata/url").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let source_url = item.pointer("/metadata/sourceURL").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let page_error = item.pointer("/metadata/error").and_then(|x| x.as_str()).map(|s| s.to_string());
+
+            let extract_url = source_url.clone().unwrap_or_default();
+
+            // Find original URL from mapping
+            let original_url = if !extract_url.is_empty() {
+                url_mappings.iter()
+                    .find(|(_, c)| c == &extract_url)
+                    .map(|(o, _)| o.clone())
+                    .or_else(|| {
+                        final_url.as_ref().and_then(|fu| {
+                            url_mappings.iter()
+                                .find(|(_, c)| c == fu)
+                                .map(|(o, _)| o.clone())
+                        })
+                    })
+                    .unwrap_or_else(|| extract_url.clone())
+            } else {
+                String::new()
+            };
+
+            pages.push(ImportedExtractPage {
+                original_url,
+                extract_url: source_url.unwrap_or_default(),
+                final_url,
+                title: page_title,
+                content: markdown,
+                error: page_error,
+            });
+        }
+    }
+    pages
+}
+
+fn firecrawl_fetch_batch_next(key: &str, next_url: &str, url_mappings: &[(String, String)]) -> Result<Vec<ImportedExtractPage>, String> {
+    let (v, _http_ok) = execute_firecrawl_request("GET", next_url, key, None)?;
+    Ok(firecrawl_collect_batch_data(&v, url_mappings))
+}
+
+fn firecrawl_get_batch_errors(key: &str, batch_id: &str) -> Result<Vec<FirecrawlBatchErrorItem>, String> {
+    let endpoint = format!("/batch/scrape/{}/errors", batch_id);
+    let (v, _http_ok) = execute_firecrawl_request("GET", &endpoint, key, None)?;
+
+    let mut items = Vec::new();
+    if let Some(errors) = v.get("errors").and_then(|x| x.as_array()) {
+        for item in errors {
+            items.push(FirecrawlBatchErrorItem {
+                id: item.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                url: item.get("url").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                error: item.get("error").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            });
+        }
+    }
+    if let Some(robots_blocked) = v.get("robotsBlocked").and_then(|x| x.as_array()) {
+        for url_val in robots_blocked {
+            if let Some(u) = url_val.as_str() {
+                items.push(FirecrawlBatchErrorItem {
+                    id: None,
+                    url: Some(u.to_string()),
+                    error: Some("Blocked by robots.txt".to_string()),
+                });
+            }
+        }
+    }
+    Ok(items)
+}
+
 #[tauri::command]
-fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
+fn import_job_links(input: ImportJobLinksInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
+    if input.urls.is_empty() { return Err("At least one URL is required".into()); }
+    let total = input.urls.len();
+    let run_id = if input.run_id.is_empty() { format!("import-{}", uuid::Uuid::new_v4()) } else { input.run_id.clone() };
+    let return_run_id = run_id.clone();
+    let folder_name = slugify(&input.name);
+    if folder_name.is_empty() { return Err("Import name must include letters or numbers".into()); }
+    let import_parent = match safe_project_path(&input.project_slug, "import-links") { Ok(p) => p, Err(e) => { return Err(e); } };
+    fs::create_dir_all(&import_parent).map_err(|e| format!("Could not create import-links folder: {e}"))?;
+    let import_base = format!("import-links/{}", folder_name);
+    let folder_path = match safe_project_path(&input.project_slug, &import_base) { Ok(p) => p, Err(e) => { return Err(e); } };
+
+    // Read Firecrawl API key early
+    let firecrawl_key = match read_firecrawl_key() {
+        Ok(Some(key)) => key,
+        Ok(None) => return Err("Firecrawl API key is missing. Add firecrawlApiKey to settings.".into()),
+        Err(e) => return Err(format!("Could not read Firecrawl API key: {e}")),
+    };
+
+    thread::spawn(move || {
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            emit_event(&on_event, &run_id, "started", format!("Starting import: {} URLs", total));
+            if let Err(e) = fs::create_dir_all(&folder_path) {
+                emit_event(&on_event, &run_id, "failed", format!("Could not create import folder: {e}"));
+                return;
+            }
+            emit_event(&on_event, &run_id, "status", format!("Created import folder: {import_base}"));
+
+            // Canonicalize all URLs first and build mapping
+            let mut url_mappings: Vec<(String, String)> = Vec::new();
+            for url in &input.urls {
+                let original_url = url.trim().to_string();
+                if !valid_import_url(&original_url) {
+                    emit_event(&on_event, &run_id, "status", format!("Skipping invalid URL: {original_url}"));
+                    continue;
+                }
+                let canonical = canonical_import_url(&original_url);
+                if canonical != original_url {
+                    emit_event(&on_event, &run_id, "debug", format!("Normalized import URL: {original_url} -> {canonical}"));
+                }
+                url_mappings.push((original_url, canonical));
+            }
+
+            let total_valid = url_mappings.len();
+            if total_valid == 0 {
+                emit_event(&on_event, &run_id, "failed", "No valid URLs to import");
+                return;
+            }
+
+            let mut files = Vec::new();
+            let mut failures = Vec::new();
+            let mut extracted_count = 0usize;
+            let mut written_count = 0usize;
+
+            if total_valid == 1 {
+                // Single URL: use Firecrawl /v2/scrape
+                let (original_url, extract_url) = &url_mappings[0];
+                emit_event(&on_event, &run_id, "debug", "Using Firecrawl single scrape");
+                emit_event_payload(&on_event, &run_id, "status", format!("Extracting: {}", extract_url.chars().take(80).collect::<String>()),
+                    serde_json::json!({"index": 1, "total": 1, "url": extract_url, "originalUrl": original_url}));
+
+                match firecrawl_scrape_url(&firecrawl_key, extract_url, &on_event, &run_id) {
+                    Ok(page) => {
+                        extracted_count += 1;
+                        if let Some(err) = &page.error {
+                            emit_event(&on_event, &run_id, "debug", format!("Firecrawl failed to extract {extract_url}: {err}"));
+                            failures.push(ImportLinkFailure { url: original_url.clone(), error: err.clone() });
+                            files.push(ImportLinkFile { url: original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(err.clone()) });
+                        } else {
+                            let final_url = page.final_url.as_deref().unwrap_or(&page.extract_url);
+                            let job = parse_imported_job(original_url, final_url, page.title.as_deref(), &page.content);
+                            let title = job.title.clone();
+                            let file_name = import_link_file_name(1, final_url);
+                            let file_rel = format!("{import_base}/{file_name}");
+                            let file_path = match safe_project_path(&input.project_slug, &file_rel) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    emit_event(&on_event, &run_id, "debug", format!("Could not resolve file path: {e}"));
+                                    files.push(ImportLinkFile { url: original_url.clone(), title, file_path: None, extracted: true, error: Some(format!("File write error: {e}")) });
+                                    return;
+                                }
+                            };
+                            let md = import_link_markdown(original_url, final_url, &job);
+                            if let Err(e) = fs::write(&file_path, md) {
+                                emit_event(&on_event, &run_id, "debug", format!("Write failed: {e}"));
+                                files.push(ImportLinkFile { url: original_url.clone(), title, file_path: None, extracted: true, error: Some(e.to_string()) });
+                            } else {
+                                written_count += 1;
+                                emit_event(&on_event, &run_id, "debug", format!("Wrote {file_rel}"));
+                                files.push(ImportLinkFile { url: original_url.clone(), title, file_path: Some(file_rel), extracted: true, error: None });
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        emit_event(&on_event, &run_id, "debug", format!("Firecrawl scrape error for {extract_url}: {e}"));
+                        let err_str = e.to_string();
+                        failures.push(ImportLinkFailure { url: original_url.clone(), error: err_str.clone() });
+                        files.push(ImportLinkFile { url: original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(format!("Extraction error: {err_str}")) });
+                    }
+                }
+            } else {
+                // Multi-URL: use Firecrawl /v2/batch/scrape in chunks of 10
+                emit_event(&on_event, &run_id, "debug", format!("Using Firecrawl batch scrape: {} URLs", total_valid));
+                let num_chunks = (total_valid + 9) / 10;
+                for chunk_idx in 0..num_chunks {
+                    let chunk_start = chunk_idx * 10;
+                    let chunk_end = std::cmp::min(chunk_start + 10, total_valid);
+                    if chunk_start >= chunk_end { break; }
+
+                    let chunk_urls: Vec<String> = url_mappings[chunk_start..chunk_end].iter().map(|(_, c)| c.clone()).collect();
+                    let chunk_mappings: Vec<(String, String)> = url_mappings[chunk_start..chunk_end].to_vec();
+
+                    emit_event(&on_event, &run_id, "debug", format!("Batch chunk {}/{}: {} URLs", chunk_idx + 1, num_chunks, chunk_urls.len()));
+
+                    let batch_id = match firecrawl_start_batch_scrape(&firecrawl_key, &chunk_urls, &on_event, &run_id) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            emit_event(&on_event, &run_id, "debug", format!("Firecrawl batch start error: {e}"));
+                            for (original_url, _) in &chunk_mappings {
+                                failures.push(ImportLinkFailure { url: original_url.clone(), error: format!("Batch start error: {e}") });
+                                files.push(ImportLinkFile { url: original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(format!("Batch error: {e}")) });
+                            }
+                            continue;
+                        }
+                    };
+
+                    emit_event(&on_event, &run_id, "debug", format!("Firecrawl batch id: {batch_id}"));
+
+                    let batch_pages = match firecrawl_poll_batch_scrape(&firecrawl_key, &batch_id, &chunk_mappings, &on_event, &run_id) {
+                        Ok(pages) => pages,
+                        Err(e) => {
+                            emit_event(&on_event, &run_id, "debug", format!("Firecrawl batch poll error: {e}"));
+                            for (original_url, _) in &chunk_mappings {
+                                failures.push(ImportLinkFailure { url: original_url.clone(), error: format!("Batch poll error: {e}") });
+                                files.push(ImportLinkFile { url: original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(format!("Batch error: {e}")) });
+                            }
+                            continue;
+                        }
+                    };
+
+                    for page in &batch_pages {
+                        extracted_count += 1;
+                        if let Some(err) = &page.error {
+                            emit_event(&on_event, &run_id, "debug", format!("Firecrawl batch failed for {}: {err}", page.extract_url));
+                            failures.push(ImportLinkFailure { url: page.original_url.clone(), error: err.clone() });
+                            files.push(ImportLinkFile { url: page.original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(err.clone()) });
+                        } else {
+                            let final_url = page.final_url.as_deref().unwrap_or(&page.extract_url);
+                            let job = parse_imported_job(&page.original_url, final_url, page.title.as_deref(), &page.content);
+                            let title = job.title.clone();
+                            let file_name = import_link_file_name(extracted_count, final_url);
+                            let file_rel = format!("{import_base}/{file_name}");
+                            let file_path = match safe_project_path(&input.project_slug, &file_rel) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    emit_event(&on_event, &run_id, "debug", format!("Could not resolve file path: {e}"));
+                                    files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: None, extracted: true, error: Some(format!("File write error: {e}")) });
+                                    continue;
+                                }
+                            };
+                            let md = import_link_markdown(&page.original_url, final_url, &job);
+                            if let Err(e) = fs::write(&file_path, md) {
+                                emit_event(&on_event, &run_id, "debug", format!("Write failed: {e}"));
+                                files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: None, extracted: true, error: Some(e.to_string()) });
+                            } else {
+                                written_count += 1;
+                                emit_event(&on_event, &run_id, "debug", format!("Wrote {file_rel}"));
+                                files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: Some(file_rel), extracted: true, error: None });
+                            }
+                        }
+                    }
+                }
+            }
+
+            let summary = ImportJobLinksSummary {
+                submitted: total,
+                extracted: extracted_count,
+                written: written_count,
+                failed: failures.len(),
+                folder_path: import_base.clone(),
+                files,
+                failures,
+            };
+            let summary_text = format!("Import complete: {written_count} written, {} failed out of {total}", summary.failed);
+            emit_event_payload(&on_event, &run_id, "completed", summary_text,
+                serde_json::to_value(&summary).unwrap_or_default());
+        }));
+        if let Err(panic) = panic_result {
+            let msg = if let Some(s) = panic.downcast_ref::<&str>() { s.to_string() }
+                      else if let Some(s) = panic.downcast_ref::<String>() { s.clone() }
+                      else { "Unexpected panic in import thread".to_string() };
+            emit_event(&on_event, &run_id, "failed", format!("Import thread panicked: {msg}"));
+        }
+    });
+    Ok(return_run_id)
+}
+
+#[tauri::command]
+fn start_hunt_apify(mut input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
     let run_id = input.run_id.clone();
     let return_run_id = run_id.clone();
     let token = read_apify_key()?.ok_or("Connect Apify API in Settings first")?;
@@ -930,9 +1907,30 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
         emit_event(&on_event, &run_id, "started", "Starting Apify Actor API hunt");
         let results_path = match safe_project_path(&input.hunt.project_slug, &input.results_path) { Ok(p) => p, Err(e) => { emit_event(&on_event, &run_id, "failed", e); return; } };
         let hunt_folder = match results_path.parent() { Some(p) => p.to_path_buf(), None => { emit_event(&on_event, &run_id, "failed", "Could not resolve hunt directory"); return; } };
-        // Migrate old-format jobs/ if present
         let _ = migrate_old_hunt_format(&hunt_folder);
-        // Read existing result DB to build seen set
+        // If re-running, load settings from stored .hunt_config.json
+        if input.is_re_run {
+            let config_path = hunt_folder.join(".hunt_config.json");
+            if let Ok(config) = serde_json::from_str::<HuntConfig>(&fs::read_to_string(&config_path).unwrap_or_default()) {
+                input.hunt = HuntRunInput {
+                    project_slug: input.hunt.project_slug.clone(),
+                    name: config.name,
+                    roles: config.roles,
+                    location: config.location,
+                    work_mode: config.work_mode,
+                    seniority: config.seniority,
+                    experience: config.experience,
+                    min_salary: config.min_salary,
+                    include_keywords: config.include_keywords,
+                    exclude_keywords: config.exclude_keywords,
+                    posted_within: config.posted_within,
+                    selected_sites: config.selected_sites,
+                    max_items: config.max_items,
+                };
+            }
+        }
+        // Compute run-level effective settings after any re-run config load.
+        let effective = effective_hunt_for_sites(&input.hunt, &input.hunt.selected_sites);
         let result_db_path = hunt_folder.join(".hunt_result.json");
         let mut result_db: HuntResultDB = if result_db_path.exists() {
             match serde_json::from_str(&fs::read_to_string(&result_db_path).unwrap_or_default()) {
@@ -943,13 +1941,43 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
             HuntResultDB { runs: vec![], jobs: HashMap::new() }
         };
         let before_count = result_db.jobs.len();
-        // Run actors
+        // Run actors with per-site effective settings
         let mut all = Vec::<(String, Value)>::new();
         let mut failures = Vec::<String>::new();
         for site in &input.hunt.selected_sites {
             let actor = actor_slug_for_site(site);
             if actor == "unknown" { failures.push(format!("{site}: unknown actor")); continue; }
-            match run_actor_api(site, actor, &input.hunt, &token, &run_id, &on_event) {
+            // Compute per-site API-effective settings; post-filter still uses run-level effective settings.
+            let api_hunt = effective_hunt_for_site_for_api(&effective, site);
+            let mut api_fields = Vec::<&str>::new();
+            let mut post_filter_fields = Vec::<&str>::new();
+            let mut unsupported_fields = Vec::<&str>::new();
+            for f in &["roles","includeKeywords","postedWithin","location"] {
+                match actor_field_capability(site, f) {
+                    ActorFieldCapability::Api => api_fields.push(f),
+                    ActorFieldCapability::PostFilter => post_filter_fields.push(f),
+                    ActorFieldCapability::Unsupported => unsupported_fields.push(f),
+                }
+            }
+            let debug_payload = serde_json::json!({
+                "site": site,
+                "actorSlug": actor,
+                "apiEffectiveFields": {
+                    "roles": api_hunt.roles,
+                    "includeKeywords": api_hunt.include_keywords,
+                    "postedWithin": api_hunt.posted_within,
+                    "location": api_hunt.location,
+                    "workMode": api_hunt.work_mode
+                },
+                "postFilterEffectiveFields": {
+                    "includeKeywords": effective.include_keywords
+                },
+                "apiFields": api_fields,
+                "postFilterFields": post_filter_fields,
+                "ignoredFields": unsupported_fields
+            });
+            emit_event_payload(&on_event, &run_id, "debug", format!("{site}: capability-adjusted fields"), debug_payload);
+            match run_actor_api(site, actor, &api_hunt, &token, &run_id, &on_event) {
                 Ok(items) => { emit_event(&on_event, &run_id, "status", format!("{site}: fetched {} items", items.len())); for item in items { all.push((site.clone(), item)); } }
                 Err(e) => { emit_event(&on_event, &run_id, "status", format!("{site} failed: {e}")); failures.push(format!("{site}: {e}")); }
             }
@@ -957,31 +1985,90 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
         let raw_found = all.len();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let mut new_jobs = Vec::<(String, HuntJob)>::new();
-        let mut filtered = 0usize;
+        let mut filtered_reasons: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut filtered_total = 0usize;
         let mut intra_duplicate = 0usize;
         let mut already_seen = 0usize;
-        for (source, item) in all {
-            let norm = normalize_hunt_job(&source, &item);
-            if post_filter_reason(&input.hunt, &norm).is_some() { filtered += 1; continue; }
+        // Track per-source filter counts and normalize samples
+        let mut source_filtered: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut source_filter_examples: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut source_raw_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut source_normalized_samples: std::collections::HashMap<String, Vec<serde_json::Value>> = std::collections::HashMap::new();
+        for (source, item) in &all {
+            *source_raw_counts.entry(source.clone()).or_insert(0) += 1;
+            let norm = normalize_hunt_job(source, item);
+            // Capture first 3 normalized samples per source for debug
+            let samples = source_normalized_samples.entry(source.clone()).or_default();
+            if samples.len() < 3 {
+                samples.push(serde_json::json!({
+                    "title": norm.title, "company": norm.company,
+                    "posted_date": norm.posted_date, "seniority": norm.seniority,
+                    "experience": norm.experience, "salary": norm.salary,
+                    "location": norm.location, "work_mode": norm.work_mode,
+                    "apply_url": norm.apply_url.chars().take(80).collect::<String>()
+                }));
+            }
+            // Use per-site post-filter-effective settings
+            let site_filter_hunt = effective.clone();
+            if let Some(reason) = post_filter_reason(&site_filter_hunt, &norm) {
+                filtered_total += 1;
+                *filtered_reasons.entry(reason.clone()).or_insert(0) += 1;
+                *source_filtered.entry(source.clone()).or_insert(0) += 1;
+                let examples = source_filter_examples.entry(source.clone()).or_default();
+                if examples.len() < 3 {
+                    let include_terms = filter_terms(&site_filter_hunt.include_keywords).join(", ");
+                    let preview = job_search_text(&norm).chars().take(180).collect::<String>();
+                    examples.push(format!("{} @ {} — {} | includeTerms=[{}] | textPreview={}", norm.title, norm.company, reason, include_terms, preview));
+                }
+                continue;
+            }
             let dedup_key = hunt_job_dedup_key(&norm);
             if result_db.jobs.contains_key(&dedup_key) { already_seen += 1; continue; }
             if new_jobs.iter().any(|(_, j)| hunt_job_dedup_key(j) == dedup_key) { intra_duplicate += 1; continue; }
-            new_jobs.push((source, norm));
+            new_jobs.push((source.clone(), norm));
             if new_jobs.len() >= input.hunt.max_items { break; }
         }
-        emit_event(&on_event, &run_id, "status", format!("Filtered {filtered}, already seen {already_seen}, intra-run duplicates {intra_duplicate}"));
+        // Emit normalize samples per source
+        let normalize_debug: std::collections::HashMap<String, serde_json::Value> = source_normalized_samples.iter().map(|(s, samples)| {
+            (s.clone(), serde_json::json!({"count": source_raw_counts.get(s).copied().unwrap_or(0), "samples": samples}))
+        }).collect();
+        emit_event_payload(&on_event, &run_id, "debug", "Normalized job samples (first 3 per source)", serde_json::to_value(&normalize_debug).unwrap_or_default());
+        // Emit post-filter debug event
+        let filter_debug = serde_json::json!({
+            "rawCount": raw_found,
+            "keptNew": new_jobs.len(),
+            "duplicateCount": already_seen + intra_duplicate,
+            "filteredTotal": filtered_total,
+            "reasons": filtered_reasons,
+            "perSourceFiltered": source_filtered,
+            "includeTerms": filter_terms(&effective.include_keywords),
+            "examples": source_filter_examples
+        });
+        emit_event_payload(&on_event, &run_id, "debug", format!("Post-filter: {filtered_total} filtered, {} kept, {} duplicate", new_jobs.len(), already_seen + intra_duplicate), filter_debug);
+        // Warn if any source had >80% of its results filtered
+        for source in &input.hunt.selected_sites {
+            let raw = source_raw_counts.get(source).copied().unwrap_or(0);
+            let filtered = source_filtered.get(source).copied().unwrap_or(0);
+            if raw > 0 && filtered as f64 / raw as f64 > 0.8 {
+                emit_event(&on_event, &run_id, "status", format!("⚠ {source}: {filtered}/{raw} filtered ({:.0}%) — possible field mapping or filter issue", (filtered as f64 / raw as f64) * 100.0));
+            }
+        }
+        emit_event(&on_event, &run_id, "status", format!("Filtered {filtered_total}, already seen {already_seen}, intra-run duplicates {intra_duplicate}"));
         // Write new jobs to date-stamped folder
         let job_dir_name = format!("jobs-{today}");
         let jobs_dir = hunt_folder.join(&job_dir_name);
         if !new_jobs.is_empty() {
             if let Err(e) = fs::create_dir_all(&jobs_dir) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
         }
+        new_jobs.sort_by(|(_, a), (_, b)| {
+            a.title.to_lowercase().cmp(&b.title.to_lowercase())
+                .then_with(|| a.company.to_lowercase().cmp(&b.company.to_lowercase()))
+        });
         let mut job_links = Vec::<(String, HuntJob)>::new();
-        for (i, (source, norm)) in new_jobs.iter().enumerate() {
+        for (i, (_source, norm)) in new_jobs.iter().enumerate() {
             let file_name = job_file_name(i+1, norm);
             let detail_path = jobs_dir.join(&file_name);
             if let Err(e) = fs::write(&detail_path, job_detail_markdown(i+1, norm)) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
-            // Add to result DB
             let key = hunt_job_dedup_key(norm);
             result_db.jobs.insert(key, HuntJobEntry {
                 title: norm.title.clone(),
@@ -999,16 +2086,26 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
         result_db.runs.push(HuntRunEntry {
             date: today.clone(),
             new_jobs: new_jobs.len(),
-            filtered,
+            filtered: filtered_total,
             duplicates: already_seen + intra_duplicate,
             sources_failed: failures.clone(),
             run_at: now_ts,
         });
-        // Update last_run in config
+        // Update last_run and settings in config with effective settings
         let config_path = hunt_folder.join(".hunt_config.json");
         if config_path.exists() {
             if let Ok(mut config) = serde_json::from_str::<HuntConfig>(&fs::read_to_string(&config_path).unwrap_or_default()) {
                 config.last_run = Some(today.clone());
+                config.roles = effective.roles.clone();
+                config.location = effective.location.clone();
+                config.work_mode = effective.work_mode.clone();
+                config.seniority = effective.seniority.clone();
+                config.experience = effective.experience.clone();
+                config.min_salary = effective.min_salary.clone();
+                config.include_keywords = effective.include_keywords.clone();
+                config.exclude_keywords = effective.exclude_keywords.clone();
+                config.posted_within = effective.posted_within.clone();
+                config.max_items = effective.max_items;
                 if let Ok(json) = serde_json::to_string_pretty(&config) {
                     let _ = fs::write(&config_path, json);
                 }
@@ -1018,17 +2115,16 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
         if let Ok(db_json) = serde_json::to_string_pretty(&result_db) {
             if let Err(e) = fs::write(&result_db_path, db_json) { emit_event(&on_event, &run_id, "failed", e.to_string()); return; }
         }
-        // Regenerate results.md from the full DB
+        // Regenerate results.md using effective settings
         let new_count = result_db.jobs.len() - before_count;
         let total_jobs = result_db.jobs.len();
         let total_runs = result_db.runs.len();
-        let roles_md = input.hunt.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("\n");
+        let roles_md = effective.roles.iter().filter(|r| !r.trim().is_empty()).map(|r| format!("- {}", r.trim())).collect::<Vec<_>>().join("\n");
         let mut md = format!("# Hunt Results\n\nRun: {}\nMode: {}\nSources: {}\nTotal runs: {}\nTotal distinct jobs: {}\nLast refreshed: {}\n\n## Hunt Settings\n\n- Max scrape results: {}\n- Location: {}\n- Posted within: {}\n- Seniority: {}\n- Experience: {}\n- Minimum salary: {}\n- Include keywords: {}\n- Avoid keywords: {}\n\n### Roles\n\n{}\n\n",
-            input.hunt.name, input.hunt.work_mode, input.hunt.selected_sites.join(", "), total_runs, total_jobs, today,
-            input.hunt.max_items, input.hunt.location, input.hunt.posted_within, input.hunt.seniority, input.hunt.experience, input.hunt.min_salary, input.hunt.include_keywords, input.hunt.exclude_keywords,
+            effective.name, effective.work_mode, effective.selected_sites.join(", "), total_runs, total_jobs, today,
+            effective.max_items, format_hunt_setting_value("location", &effective.location), format_hunt_setting_value("postedWithin", &effective.posted_within), format_hunt_setting_value("seniority", &effective.seniority), format_hunt_setting_value("experience", &effective.experience), format_hunt_setting_value("salary", &effective.min_salary), format_hunt_setting_value("includeKeywords", &effective.include_keywords), format_hunt_setting_value("excludeKeywords", &effective.exclude_keywords),
             if roles_md.is_empty(){"- Not specified".to_string()}else{roles_md});
         if !failures.is_empty() { md.push_str("## Source Failures\n\n"); for f in &failures { md.push_str(&format!("- {f}\n")); } md.push('\n'); }
-        // Per-run sections
         for (ri, run) in result_db.runs.iter().enumerate() {
             let label = if ri == result_db.runs.len() - 1 && new_count > 0 { "Latest Run".to_string() } else { format!("Run {}", ri + 1) };
             let new_info = if ri == result_db.runs.len() - 1 && new_count > 0 { format!(" ({} new)", new_count) } else { String::new() };
@@ -1039,7 +2135,6 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
             md.push_str(&format!("- Jobs found: {}\n", run.new_jobs + run.filtered + run.duplicates));
             md.push_str(&format!("- New: {} . Filtered: {} . Duplicates: {}\n\n", run.new_jobs, run.filtered, run.duplicates));
         }
-        // Build master job index from all runs
         md.push_str("## All Jobs\n\n");
         let mut all_job_entries: Vec<(&String, &HuntJobEntry)> = result_db.jobs.iter().collect();
         all_job_entries.sort_by(|(_, a), (_, b)| b.last_seen.cmp(&a.last_seen).then_with(|| a.title.cmp(&b.title)));
@@ -1055,7 +2150,7 @@ fn start_hunt_apify(input: RunHuntApifyInput, on_event: Channel<AgentRunEvent>) 
         let payload = serde_json::json!({
             "rawFound": raw_found,
             "newJobs": new_count,
-            "filtered": filtered,
+            "filtered": filtered_total,
             "duplicates": already_seen + intra_duplicate,
             "totalDistinctJobs": total_jobs,
             "totalRuns": total_runs,
@@ -1160,29 +2255,14 @@ fn normalize_indeed(v: &Value) -> HuntJob {
     HuntJob {
         title: alias(v, &["title", "jobTitle", "positionName", "position"]), company: alias(v, &["company", "companyName", "source"]),
         location: loc,
-        work_mode: alias(v, &["remote", "workMode", "workArrangement", "jobType"]), seniority: alias(v, &["level", "jobLevel"]), experience: String::new(),
+        work_mode: alias(v, &["isRemote", "workingSystem", "remote", "workMode", "workArrangement", "jobType"]), seniority: alias(v, &["level", "jobLevel"]), experience: String::new(),
         salary: alias(v, &["salary", "salaryText", "salaryRange", "estimatedSalary"]),
-        posted_date: alias(v, &["postedAt", "postedDate", "date", "publishedAt", "formattedRelativeTime"]),
+        posted_date: alias(v, &["datePublished", "postedToday", "postedAt", "postedDate", "date", "publishedAt", "formattedRelativeTime"]),
         apply_url: alias(v, &["url", "jobUrl", "jobURL", "applyUrl", "apply_url"]),
         source_url: alias(v, &["url", "jobUrl", "jobURL", "applyUrl", "apply_url"]),
         source_name: "Indeed".into(), actor_slug: "borderline/indeed-scraper".into(),
-        description: concise(alias(v, &["description", "jobDescription", "snippet", "text"]), 1800),
+        description: concise(alias(v, &["descriptionText", "descriptionHtml", "description", "jobDescription", "snippet", "text"]), 1800),
         requirements: vec![], skills: listify(v, &["skills"]),
-    }
-}
-fn normalize_wellfound(v: &Value) -> HuntJob {
-    HuntJob {
-        title: alias(v, &["title"]), company: alias(v, &["companyName"]),
-        location: alias_alt(v, &["locations"], &["location"]),
-        work_mode: if alias_bool(v, "remote",false) { "Remote".into() } else { String::new() },
-        seniority: String::new(), experience: String::new(),
-        salary: alias(v, &["compensation","salary"]),
-        posted_date: alias(v, &["postedAt"]),
-        apply_url: alias(v, &["jobUrl","url"]),
-        source_url: alias(v, &["jobUrl","url"]),
-        source_name: "Wellfound".into(), actor_slug: "crawlerbros/wellfound-scraper".into(),
-        description: concise(alias(v, &["description"]), 1800),
-        requirements: vec![], skills: vec![],
     }
 }
 fn normalize_yc(v: &Value) -> HuntJob {
@@ -1190,10 +2270,10 @@ fn normalize_yc(v: &Value) -> HuntJob {
         title: alias(v, &["title"]), company: alias(v, &["companyName"]),
         location: alias(v, &["location"]),
         work_mode: String::new(),
-        seniority: alias(v, &["experience"]),
-        experience: String::new(),
+        seniority: String::new(),
+        experience: alias(v, &["experience"]),
         salary: alias_alt(v, &["salaryRange"], &["salaryMin","salaryMax","salaryCurrency"]),
-        posted_date: alias(v, &["datePosted"]),
+        posted_date: alias(v, &["postedAgo", "datePosted"]),
         apply_url: alias(v, &["applyUrl"]),
         source_url: alias(v, &["companyUrl","applyUrl"]),
         source_name: "YC Startup Jobs".into(), actor_slug: "memo23/y-combinator-scraper".into(),
@@ -1205,10 +2285,10 @@ fn normalize_welcome_jungle(v: &Value) -> HuntJob {
     HuntJob {
         title: alias(v, &["title"]), company: alias(v, &["company"]),
         location: alias_alt(v, &["location"], &["country"]),
-        work_mode: if alias_bool(v, "remote",false) { "Remote".into() } else { String::new() },
-        seniority: String::new(), experience: String::new(),
-        salary: alias(v, &["salary"]),
-        posted_date: alias(v, &["date_posted"]),
+        work_mode: if alias_bool(v, "remote",false) || alias_bool(v, "has_remote", false) { "Remote".into() } else { String::new() },
+        seniority: alias(v, &["experience_level_minimum"]), experience: alias(v, &["experience_level_minimum"]),
+        salary: alias_alt(v, &["salary"], &["salary_yearly_minimum", "salary_minimum", "salary_maximum", "salary_currency", "salary_period"]),
+        posted_date: alias(v, &["date_posted", "published_at_timestamp"]),
         apply_url: alias(v, &["url"]),
         source_url: alias(v, &["url"]),
         source_name: "Welcome to the Jungle".into(), actor_slug: "shahidirfan/jungle-job-scraper".into(),
@@ -1234,35 +2314,6 @@ fn normalize_hiring_cafe(v: &Value) -> HuntJob {
         skills: listify(v, &["v5_processed_job_data_technical_tools"]),
     }
 }
-fn normalize_we_work_remotely(v: &Value) -> HuntJob {
-    HuntJob {
-        title: alias(v, &["title"]), company: alias(v, &["company"]),
-        location: alias(v, &["region","location"]),
-        work_mode: "Remote".into(), seniority: String::new(), experience: String::new(),
-        salary: alias(v, &["salary"]),
-        posted_date: alias(v, &["date_posted"]),
-        apply_url: alias(v, &["apply_url","url","applyLink"]),
-        source_url: alias(v, &["apply_url","url","applyLink"]),
-        source_name: "We Work Remotely".into(), actor_slug: "crawlerbros/weworkremotely-job-scraper".into(),
-        description: concise(alias(v, &["description","descriptionHtml","text"]), 1800),
-        requirements: vec![], skills: vec![],
-    }
-}
-fn normalize_flexjobs(v: &Value) -> HuntJob {
-    HuntJob {
-        title: alias(v, &["title"]), company: alias(v, &["company"]),
-        location: alias_alt(v, &["job_locations"], &["allowed_candidate_location","locations"]),
-        work_mode: alias_alt(v, &["remote","remote_options"], &["job_schedules"]),
-        seniority: alias(v, &["levels","career_levels"]), experience: String::new(),
-        salary: alias(v, &["salary"]),
-        posted_date: alias(v, &["posted_date","postedDate","date_posted"]),
-        apply_url: alias(v, &["slug","url","applyUrl"]),
-        source_url: alias(v, &["slug","url","applyUrl"]),
-        source_name: "FlexJobs".into(), actor_slug: "jupri/flexjobs-scraper".into(),
-        description: concise(alias(v, &["description","job_summary"]), 1800),
-        requirements: vec![], skills: vec![],
-    }
-}
 fn normalize_himalayas(v: &Value) -> HuntJob {
     HuntJob {
         title: alias(v, &["title"]), company: alias(v, &["company_name"]),
@@ -1270,27 +2321,13 @@ fn normalize_himalayas(v: &Value) -> HuntJob {
         work_mode: alias(v, &["work_mode"]),
         seniority: alias(v, &["experience_level"]),
         experience: String::new(),
-        salary: alias_alt(v, &["salary_min"], &["salary_max","currency","salary_period"]),
+        salary: alias_alt(v, &["salary_min"], &["salary_max","salary_currency","salary_period"]),
         posted_date: alias(v, &["posted_at"]),
         apply_url: alias(v, &["apply_url"]),
         source_url: alias(v, &["source_url","data_source_url"]),
         source_name: "Himalayas".into(), actor_slug: "inlifeprojects/himalayas-jobs-scraper".into(),
         description: concise(alias(v, &["description"]), 1800),
         requirements: vec![], skills: listify(v, &["tags"]),
-    }
-}
-fn normalize_remotive(v: &Value) -> HuntJob {
-    HuntJob {
-        title: alias(v, &["title","name"]), company: alias(v, &["company","company_name"]),
-        location: alias(v, &["candidate_required_location","location","region"]),
-        work_mode: "Remote".into(), seniority: String::new(), experience: String::new(),
-        salary: alias(v, &["salary","salary_range","min_salary"]),
-        posted_date: alias(v, &["publication_date","date"]),
-        apply_url: alias(v, &["url","apply_url"]),
-        source_url: alias(v, &["url","apply_url"]),
-        source_name: "Remotive".into(), actor_slug: "unfenced-group/remotive-scraper".into(),
-        description: concise(alias(v, &["description"]), 1800),
-        requirements: vec![], skills: vec![],
     }
 }
 fn normalize_generic(v: &Value) -> HuntJob {
@@ -1315,14 +2352,10 @@ fn normalize_hunt_job(site: &str, v: &Value) -> HuntJob {
         "54 Career Sites" => normalize_54_career_sites(v),
         "LinkedIn" => normalize_linkedin(v),
         "Indeed" => normalize_indeed(v),
-        "Wellfound" => normalize_wellfound(v),
         "YC Startup Jobs" => normalize_yc(v),
         "Welcome to the Jungle" => normalize_welcome_jungle(v),
         "HiringCafe" => normalize_hiring_cafe(v),
-        "We Work Remotely" => normalize_we_work_remotely(v),
-        "FlexJobs" => normalize_flexjobs(v),
         "Himalayas" => normalize_himalayas(v),
-        "Remotive" => normalize_remotive(v),
         _ => normalize_generic(v),
     };
     if j.source_name.is_empty() { j.source_name = site.to_string(); }
@@ -1337,7 +2370,7 @@ fn filter_terms(raw: &str) -> Vec<String> {
         .collect()
 }
 fn job_search_text(j: &HuntJob) -> String {
-    format!("{} {} {} {} {} {} {}", j.title, j.company, j.location, j.description, j.requirements.join(" "), j.skills.join(" "), j.seniority).to_lowercase()
+    format!("{} {} {} {} {} {} {} {}", j.title, j.company, j.location, j.description, j.requirements.join(" "), j.skills.join(" "), j.seniority, j.experience).to_lowercase()
 }
 fn contains_any_term(text: &str, terms: &[String]) -> bool { terms.iter().any(|t| !t.is_empty() && text.contains(t)) }
 fn location_aliases(term: &str) -> Vec<String> {
@@ -1355,33 +2388,6 @@ fn selected_location_terms(h: &HuntRunInput) -> Vec<String> {
         .filter(|s| !s.is_empty() && s != "worldwide")
         .collect()
 }
-fn location_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
-    if h.location.to_lowercase().contains("worldwide") { return true; }
-    let wanted = selected_location_terms(h);
-    if wanted.is_empty() { return true; }
-    let loc = j.location.to_lowercase();
-    if loc.trim().is_empty() || loc == "not available" { return true; }
-    if loc.contains("worldwide") || loc.contains("anywhere") || loc.contains("global") { return true; }
-    if h.work_mode == "Remote" && j.work_mode.to_lowercase().contains("remote") { return true; }
-    wanted.iter().any(|w| loc.contains(w))
-}
-fn work_mode_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
-    if h.work_mode != "Remote" { return true; }
-    let wm = j.work_mode.to_lowercase();
-    if wm.trim().is_empty() || wm == "not available" { return true; }
-    if wm.contains("remote") || wm.contains("hybrid") || wm.contains("distributed") || wm.contains("worldwide") { return true; }
-    !(wm.contains("onsite") || wm.contains("on-site") || wm.contains("on site") || wm.contains("office"))
-}
-fn seniority_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
-    let target = h.seniority.to_lowercase();
-    let s = format!("{} {} {}", j.seniority, j.experience, j.title).to_lowercase();
-    if target.trim().is_empty() || s.trim().is_empty() { return true; }
-    let wants_early = target.contains("entry") || target.contains("associate") || target.contains("junior");
-    let wants_senior = target.contains("senior") || target.contains("lead") || target.contains("principal");
-    if wants_early && (s.contains("senior") || s.contains("principal") || s.contains("staff") || s.contains("lead") || s.contains("director") || s.contains("head of")) { return false; }
-    if wants_senior && (s.contains("intern") || s.contains("entry") || s.contains("graduate") || s.contains("junior")) { return false; }
-    true
-}
 fn extract_numbers(text: &str) -> Vec<i64> {
     let mut nums=vec![]; let mut cur=String::new();
     for ch in text.chars() {
@@ -1390,31 +2396,6 @@ fn extract_numbers(text: &str) -> Vec<i64> {
     }
     if !cur.is_empty() { if let Ok(n)=cur.parse::<i64>() { nums.push(n); } }
     nums
-}
-fn experience_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
-    let target = h.experience.to_lowercase();
-    let text = format!("{} {}", j.experience, j.requirements.join(" ")).to_lowercase();
-    if target.trim().is_empty() || text.trim().is_empty() { return true; }
-    let max_allowed = if target.contains("0") && target.contains("1") && !target.contains("3") { Some(1) }
-        else if target.contains("1") && target.contains("3") { Some(3) }
-        else if target.contains("3") && target.contains("5") { Some(5) }
-        else { None };
-    let Some(max_allowed)=max_allowed else { return true; };
-    let nums = extract_numbers(&text);
-    if nums.is_empty() { return true; }
-    nums.into_iter().min().map(|n| n <= max_allowed + 1).unwrap_or(true)
-}
-fn salary_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
-    let min = min_salary_num(h);
-    if min <= 0 { return true; }
-    let s = j.salary.to_lowercase().replace(',', "");
-    if s.trim().is_empty() || s == "not available" { return true; }
-    let mut nums = extract_numbers(&s);
-    if nums.is_empty() { return true; }
-    if s.contains('k') { nums = nums.into_iter().map(|n| if n < 1000 { n*1000 } else { n }).collect(); }
-    let max_seen = nums.into_iter().max().unwrap_or(0);
-    if max_seen < 1000 { return true; }
-    max_seen >= min
 }
 fn posted_days_limit(h: &HuntRunInput) -> Option<i64> {
     match h.posted_within.as_str() { "1 week" => Some(7), "3 weeks" => Some(21), "1 month" => Some(31), "3 months" => Some(93), _ => None }
@@ -1429,30 +2410,10 @@ fn relative_posted_within(s: &str, limit: i64) -> Option<bool> {
     else if t.contains("month") { Some(n*31 <= limit) }
     else { None }
 }
-fn posted_date_matches(h: &HuntRunInput, j: &HuntJob) -> bool {
-    let Some(limit)=posted_days_limit(h) else { return true; };
-    let s=j.posted_date.trim();
-    if s.is_empty() || s.eq_ignore_ascii_case("not available") { return true; }
-    if let Some(ok)=relative_posted_within(s, limit) { return ok; }
-    let now=chrono::Utc::now();
-    if let Ok(dt)=chrono::DateTime::parse_from_rfc3339(s) { return now.signed_duration_since(dt.with_timezone(&chrono::Utc)).num_days() <= limit; }
-    for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y"] {
-        if let Ok(d)=chrono::NaiveDate::parse_from_str(s.get(0..std::cmp::min(s.len(),10)).unwrap_or(s), fmt) {
-            if let Some(ndt)=d.and_hms_opt(0,0,0) { return now.signed_duration_since(ndt.and_utc()).num_days() <= limit; }
-        }
-    }
-    true
-}
 fn post_filter_reason(h: &HuntRunInput, j: &HuntJob) -> Option<String> {
     if j.title.trim().is_empty() || j.company.trim().is_empty() { return Some("missing title/company".into()); }
-    let avoid = filter_terms(&h.exclude_keywords);
-    if !avoid.is_empty() && contains_any_term(&job_search_text(j), &avoid) { return Some("avoid keyword".into()); }
-    if !work_mode_matches(h,j) { return Some("work mode mismatch".into()); }
-    if !location_matches(h,j) { return Some("location mismatch".into()); }
-    if !posted_date_matches(h,j) { return Some("posted outside selected range".into()); }
-    if !salary_matches(h,j) { return Some("below minimum salary".into()); }
-    if !seniority_matches(h,j) { return Some("seniority mismatch".into()); }
-    if !experience_matches(h,j) { return Some("experience mismatch".into()); }
+    let include = filter_terms(&h.include_keywords);
+    if !include.is_empty() && !contains_any_term(&job_search_text(j), &include) { return Some("missing include keyword".into()); }
     None
 }
 
@@ -1615,9 +2576,6 @@ fn hunt_job_dedup_key(j: &HuntJob) -> String {
     }
 }
 fn normalize_job(v:&Value)->Result<JobRecord,String>{ let title=string_alias(v,&["title","jobTitle","position","name"]).ok_or("missing title")?; let company=string_alias(v,&["company","companyName","employer","organization"]).ok_or("missing company")?; let apply_url=string_alias(v,&["applyUrl","applyURL","url","jobUrl","jobURL","link"]).ok_or("missing applyUrl/sourceUrl")?; let source_url=string_alias(v,&["sourceUrl","sourceURL","postingUrl","jobUrl","url","link"]).unwrap_or_else(||apply_url.clone()); let remote=string_alias(v,&["remoteType","remote","workplaceType"]).unwrap_or_else(||"unknown".into()).to_lowercase(); let remote_type=if remote.contains("hybrid"){"hybrid"}else if remote.contains("remote")||remote=="true"{"remote"}else if remote.contains("onsite")||remote.contains("office"){"onsite"}else{"unknown"}.to_string(); let key=dedupe_key(&company,&title,&apply_url,&source_url); Ok(JobRecord{id:short_hash(&key),title,company,location:string_alias(v,&["location","jobLocation","city"]),remote_type,description:string_alias(v,&["description","jobDescription","text","summary"]),salary_range:string_alias(v,&["salary","salaryRange","compensation"]),apply_url,source_url,source_type:"apify".into(),dedupe_key:key,status:"new".into(),created_at:now()}) }
-
-#[tauri::command]
-fn import_apify_json(input: ImportInput)->Result<ImportResult,String>{ let path=safe_project_path(&input.project_slug,&input.path)?; let raw:Value=serde_json::from_str(&fs::read_to_string(path).map_err(|e|e.to_string())?).map_err(|e|format!("Malformed JSON: {e}"))?; let items=array_items(raw); let mut db=load_db()?; let mut imported=0; let mut skipped_reasons=vec![]; for (idx,item) in items.iter().enumerate(){ match normalize_job(item){ Ok(job)=>{ if db.jobs.iter().any(|j| j.project_slug==input.project_slug && j.job.dedupe_key==job.dedupe_key){ continue; } db.jobs.push(StoredJob{project_slug:input.project_slug.clone(),job}); imported+=1; }, Err(reason)=>skipped_reasons.push(format!("row {}: {}",idx+1,reason)) } } save_db(&db)?; Ok(ImportResult{imported,skipped:skipped_reasons.len(),skipped_reasons}) }
 #[tauri::command]
 fn list_jobs(project_slug:String,status:Option<String>)->Result<Vec<JobRecord>,String>{ let mut jobs:Vec<_>=load_db()?.jobs.into_iter().filter(|j|j.project_slug==project_slug).map(|j|j.job).filter(|j|status.as_ref().map(|s|s=="all"||&j.status==s).unwrap_or(true)).collect(); jobs.sort_by(|a,b|b.created_at.cmp(&a.created_at)); Ok(jobs) }
 #[tauri::command]
@@ -1760,6 +2718,87 @@ fn agent_respond(input: AgentRespondInput) -> Result<String, String> {
     Ok(stdout)
 }
 
+fn tavily_extract_urls(urls: &[String]) -> Result<TavilyExtractOutput, String> {
+    let key = read_tavily_key()?.ok_or("Tavily API key not configured")?;
+    let body = serde_json::json!({
+        "urls": urls,
+        "extract_depth": "advanced",
+        "include_images": false,
+        "format": "text"
+    });
+    let result = execute_tavily_extract(&key, &body);
+    let result = match result {
+        Ok(v) => v,
+        Err(e) => {
+            // Retry once with minimal body if Tavily rejected the request shape
+            if e.contains("422") || e.contains("400") || e.contains("unexpected") || e.contains("Invalid") {
+                let minimal = serde_json::json!({"urls": urls});
+                execute_tavily_extract(&key, &minimal)?
+            } else {
+                return Err(e);
+            }
+        }
+    };
+    Ok(result)
+}
+
+fn execute_tavily_extract(key: &str, body: &Value) -> Result<TavilyExtractOutput, String> {
+    let body_str = serde_json::to_string(body).map_err(|e| e.to_string())?;
+    let out = Command::new("curl")
+        .args(["-sS", "--max-time", "30", "--connect-timeout", "10", "-X", "POST", "https://api.tavily.com/extract",
+            "-H", &format!("Authorization: Bearer {key}"),
+            "-H", "Content-Type: application/json",
+            "-d", &body_str])
+        .output().map_err(|e| format!("Tavily extract request failed: {e}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = format!("{}{}", stdout, stderr);
+    if !out.status.success() {
+        return Err(format!("Tavily extract failed: {}", text.chars().take(300).collect::<String>()));
+    }
+    let v: Value = serde_json::from_str(&stdout).map_err(|e| format!("Tavily extract response parse: {e}"))?;
+    // Tolerant parsing: accept multiple response schemas
+    let mut results = Vec::new();
+    let mut failed_results = Vec::new();
+    // Check for results array (primary field)
+    if let Some(arr) = v.get("results").and_then(|x| x.as_array()) {
+        for item in arr {
+            let url = item["url"].as_str().unwrap_or("").to_string();
+            let raw_content = item.get("raw_content").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let content = item.get("content").and_then(|x| x.as_str()).map(|s| s.to_string());
+            let text = item.get("text").and_then(|x| x.as_str()).map(|s| s.to_string());
+            if url.is_empty() {
+                // If a result lacks a URL, treat it as a potential failure
+                let err = item["error"].as_str().unwrap_or("No URL in result").to_string();
+                failed_results.push(TavilyExtractFailure { url: String::new(), error: err });
+            } else {
+                let title = item.get("title").and_then(|x| x.as_str()).map(|s| s.to_string());
+                results.push(TavilyExtractResult { url, title, raw_content, content, text });
+            }
+        }
+    }
+    // Check for failed_results array
+    if let Some(fails) = v.get("failed_results").and_then(|x| x.as_array()) {
+        for item in fails {
+            let url = item["url"].as_str().unwrap_or("").to_string();
+            let error = item["error"].as_str().unwrap_or("Unknown failure").to_string();
+            failed_results.push(TavilyExtractFailure { url, error });
+        }
+    }
+    // If no recognized structure, return a clear error
+    if results.is_empty() && failed_results.is_empty() {
+        // Check if the response itself is an error object
+        if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
+            return Err(format!("Tavily Extract error: {err}"));
+        }
+        if let Some(detail) = v.get("detail").and_then(|x| x.as_str()) {
+            return Err(format!("Tavily Extract error: {detail}"));
+        }
+        return Err("Tavily Extract response schema not recognized — expected results[] and/or failed_results[]".into());
+    }
+    Ok(TavilyExtractOutput { results, failed_results })
+}
+
 fn search_tavily(query: &str) -> Result<String, String> {
     let key = read_tavily_key()?.ok_or("Tavily API key not configured")?;
     let body = serde_json::json!({"query": query, "search_depth": "advanced", "max_results": 6}).to_string();
@@ -1783,7 +2822,7 @@ fn search_tavily(query: &str) -> Result<String, String> {
     Ok(result)
 }
 
-fn execute_tool(tool_name: &str, args: &Value, project_root: &std::path::Path) -> Result<String, String> {
+fn execute_tool(tool_name: &str, args: &Value, project_root: &std::path::Path, project_slug: &str) -> Result<String, String> {
     match tool_name {
         "search_web" | "web_search" | "tavily_search" => {
             let query = args["query"].as_str().or_else(|| args["q"].as_str()).ok_or("search_web requires a 'query' argument")?;
@@ -1802,6 +2841,22 @@ fn execute_tool(tool_name: &str, args: &Value, project_root: &std::path::Path) -
             if let Some(parent) = resolved.parent() { fs::create_dir_all(parent).map_err(|e| format!("Create dir: {e}"))?; }
             fs::write(&resolved, content).map_err(|e| format!("Write error: {e}"))?;
             Ok(format!("Wrote {} bytes to {path_str}", content.len()))
+        }
+        "render_resume" | "render_resume_pdf" | "render_pdf" => {
+            let path_str = args["path"].as_str().or_else(|| args["file"].as_str()).ok_or("render_resume requires a 'path' or 'file' argument")?;
+            let trimmed = path_str.trim().trim_start_matches("./");
+            if trimmed.is_empty() { return Err("render_resume path cannot be empty".into()); }
+            if std::path::Path::new(trimmed).is_absolute() || trimmed.contains("..") {
+                return Err("render_resume path must be workspace-relative and cannot contain ..".into());
+            }
+            if !trimmed.ends_with("/resume.md") || !trimmed.split('/').any(|part| part == "personalized-resume") {
+                return Err("render_resume only accepts personalized-resume/.../resume.md files".into());
+            }
+            let resolved = resolve_workspace_path(project_root, trimmed)?;
+            if !resolved.exists() { return Err(format!("resume.md not found: {trimmed}")); }
+            let job_path = trimmed.strip_suffix("/resume.md").ok_or("render_resume path must end with /resume.md")?.to_string();
+            let rendered = resume::render_resume(resume::ResumeInput { project_slug: project_slug.to_string(), job_path })?;
+            Ok(format!("Rendered PDF: {}", rendered.pdf_path))
         }
         "run_command" | "shell" | "exec" => {
             let cmd_str = args["command"].as_str().or_else(|| args["cmd"].as_str()).ok_or("run_command requires 'command'")?;
@@ -1845,7 +2900,7 @@ fn resolve_workspace_path(project_root: &std::path::Path, path_str: &str) -> Res
 fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
     let root = project_root(&input.project_slug)?;
     let run_id = input.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/resume_current.*, resources/, hunt_run/<name>/results.md (master job index), hunt_run/<name>/jobs-*/ (read-only scraped listings), applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create.\n\n## Available commands\n{}\n\nUser message:\n{}", resume::skill_registry_prompt(), input.prompt);
+    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/RESUME.md, profile/USER.md, profile/resume_current.*, resources/, hunt_run/<name>/results.md (master job index), hunt_run/<name>/jobs-*/ (read-only scraped listings), hunt_run/<name>/personalized-resume/ (tailored resume outputs), applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create. Available local tools include read_file, write_file, run_command, search_web, and render_resume. Use render_resume only for personalized-resume/.../resume.md files.\n\n## Available commands\n{}\n\nUser message:\n{}", resume::skill_registry_prompt(), input.prompt);
     if let Some(p) = input.linked_file_path { prompt.push_str(&format!("\n\nCurrently selected file: {}", p)); }
 
     // Inject skill instructions if the user's message matches a skill keyword
@@ -1856,6 +2911,7 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
     let model = input.model.unwrap_or_else(|| "gpt-5.5".into());
     let effort = input.effort.unwrap_or_else(|| "low".into());
     let root_str = root.to_str().ok_or("Invalid project path")?.to_string();
+    let project_slug_for_tools = input.project_slug.clone();
     let apify_token = read_apify_key().ok().flatten();
     let mut child_cmd = Command::new(codex_bin());
     child_cmd.env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
@@ -1924,7 +2980,7 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
                 let args = item.get("arguments").unwrap_or(&Value::Null);
                 let target = args.get("path").or_else(|| args.get("file")).or_else(|| args.get("query")).or_else(|| args.get("command")).or_else(|| args.get("cmd")).and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or_else(|| tool_name.clone());
                 let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"tool-call".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"target":target,"status":"pending"}).to_string()});
-                let result = execute_tool(&tool_name, args, std::path::Path::new(&root_str));
+                let result = execute_tool(&tool_name, args, std::path::Path::new(&root_str), &project_slug_for_tools);
                 let status = if result.is_ok() { "done" } else { "error" };
                 let preview = match &result { Ok(s) => s.chars().take(200).collect::<String>(), Err(e) => e.clone() };
                 let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"tool-result".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"status":status,"preview":preview}).to_string()});
@@ -1942,7 +2998,7 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
                     let args = &item["arguments"];
                     let target = args.get("path").or_else(|| args.get("file")).or_else(|| args.get("query")).or_else(|| args.get("command")).or_else(|| args.get("cmd")).and_then(|x| x.as_str()).map(|s| s.to_string()).unwrap_or_else(|| tool_name.clone());
                     let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"tool-call".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"target":target,"status":"pending"}).to_string()});
-                    let result = execute_tool(&tool_name, args, std::path::Path::new(&root_str));
+                    let result = execute_tool(&tool_name, args, std::path::Path::new(&root_str), &project_slug_for_tools);
                     let status = if result.is_ok() { "done" } else { "error" };
                     let preview = match &result { Ok(s) => s.chars().take(200).collect::<String>(), Err(e) => e.clone() };
                     let _ = event_stream.send(AgentRunEvent{payload:None,run_id:id.clone(),kind:"tool-result".into(),text:serde_json::json!({"id":tool_call_id,"name":tool_name,"status":status,"preview":preview}).to_string()});
@@ -2137,20 +3193,71 @@ fn tavily_connect(input: TavilyConnectInput) -> Result<TavilyStatus, String> {
 }
 
 #[tauri::command]
+fn tavily_extract(input: TavilyExtractInput) -> Result<TavilyExtractOutput, String> {
+    if input.urls.is_empty() { return Err("At least one URL is required".into()); }
+    for url in &input.urls {
+        if !valid_import_url(url) { return Err(format!("Invalid URL: {url}")); }
+    }
+    tavily_extract_urls(&input.urls)
+}
+
+#[tauri::command]
 fn tavily_disconnect() -> Result<TavilyStatus, String> {
     write_setting_key("tavilyApiKey", None)?;
     Ok(TavilyStatus{connected:false,detail:"Disconnected".into(),masked_key:None})
 }
 
+fn read_firecrawl_key() -> Result<Option<String>, String> { read_setting_key("firecrawlApiKey") }
+
+#[tauri::command]
+fn firecrawl_status() -> FirecrawlStatus {
+    match read_firecrawl_key() {
+        Ok(Some(key)) => FirecrawlStatus{connected:true,detail:"API key saved".into(),masked_key:Some(mask_key(&key))},
+        Ok(None) => FirecrawlStatus{connected:false,detail:"Needs Firecrawl API key".into(),masked_key:None},
+        Err(e) => FirecrawlStatus{connected:false,detail:e,masked_key:None},
+    }
+}
+
+#[tauri::command]
+fn firecrawl_connect(input: FirecrawlConnectInput) -> Result<FirecrawlStatus, String> {
+    let key = input.api_key.trim();
+    if key.is_empty() { return Err("Firecrawl API key is required".into()); }
+    if !key.starts_with("fc-") { return Err("Firecrawl API key should look like fc-...".into()); }
+    let body = serde_json::json!({"query":"Drop the Grind Firecrawl connection test","limit":1}).to_string();
+    let out = Command::new("curl")
+        .args(["-sS", "-X", "POST", "https://api.firecrawl.dev/v2/search",
+            "-H", &format!("Authorization: Bearer {key}"),
+            "-H", "Content-Type: application/json",
+            "-d", &body])
+        .output().map_err(|e| format!("Could not run curl to test Firecrawl: {e}"))?;
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() { return Err(format!("Firecrawl test failed: {text}")); }
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if v.get("success").and_then(|x| x.as_bool()).unwrap_or(false) {
+        write_setting_key("firecrawlApiKey", Some(key))?;
+        Ok(FirecrawlStatus{connected:true,detail:"Firecrawl search test passed".into(),masked_key:Some(mask_key(key))})
+    } else if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
+        Err(format!("Firecrawl rejected the key: {err}"))
+    } else {
+        Err(format!("Firecrawl test failed: {}", text.chars().take(300).collect::<String>()))
+    }
+}
+
+#[tauri::command]
+fn firecrawl_disconnect() -> Result<FirecrawlStatus, String> {
+    write_setting_key("firecrawlApiKey", None)?;
+    Ok(FirecrawlStatus{connected:false,detail:"Disconnected".into(),masked_key:None})
+}
+
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
-    if !(url.starts_with("https://console.apify.com/") || url.starts_with("https://apify.com/") || url.starts_with("https://app.tavily.com/") || url.starts_with("https://docs.tavily.com/")) { return Err("URL not allowed".into()); }
+    if !(url.starts_with("https://console.apify.com/") || url.starts_with("https://apify.com/") || url.starts_with("https://app.tavily.com/") || url.starts_with("https://docs.tavily.com/") || url.starts_with("https://www.firecrawl.dev/") || url.starts_with("https://docs.firecrawl.dev/")) { return Err("URL not allowed".into()); }
     Command::new("open").arg(url).spawn().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,read_binary_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,open_project_file,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,import_apify_json,list_hunt_profiles,save_hunt_config,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,rename_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,open_external_url,resume::validate_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
+pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,read_binary_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,open_project_file,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,tavily_extract,import_job_links,list_hunt_profiles,save_hunt_config,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,rename_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,firecrawl_status,firecrawl_connect,firecrawl_disconnect,open_external_url,resume::validate_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
 mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} }

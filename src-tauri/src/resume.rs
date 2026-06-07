@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCmd;
 
 // ── Data Structures ──────────────────────────────────────────────
@@ -64,7 +64,9 @@ pub struct ValidationResult {
 #[serde(rename_all = "camelCase")]
 pub struct ResumeInput {
     pub project_slug: String,
-    pub job_path: String, // relative path under hunt_run/<name>/jobs/<job-name>/
+    // Workspace-relative directory containing resume.md.
+    // PDF rendering is restricted to paths under personalized-resume/.
+    pub job_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -90,6 +92,11 @@ pub const SKILLS: &[Skill] = &[
         name: "/fix-render",
         description: "Debug and fix resume PDF rendering issues (missing fields, format errors, Typst problems)",
         keyword_patterns: &["render", "pdf", "typst", "/fix-render", "fix the resume", "resume is broken", "rendering failed"],
+    },
+    Skill {
+        name: "/resume-builder-all",
+        description: "Tailor one personalized resume for every job in a selected hunt jobs folder",
+        keyword_patterns: &["/resume-builder-all", "resume-builder-all", "resume builder all", "build all resumes", "tailor all resumes", "personalized resumes for all jobs"],
     },
 ];
 
@@ -119,6 +126,7 @@ pub fn matching_skill(message: &str) -> Option<&'static Skill> {
 pub fn skill_instructions(name: &str) -> Option<&'static str> {
     match name {
         "/fix-render" => Some(SKILL_FIX_RENDER),
+        "/resume-builder-all" => Some(SKILL_RESUME_BUILDER_ALL),
         _ => None,
     }
 }
@@ -565,6 +573,38 @@ fn resolve_typst_binary() -> Result<PathBuf, String> {
 
 // ── Tauri commands ─────────────────────────────────────────────
 
+fn validate_personalized_resume_job_path(job_path: &str) -> Result<(), String> {
+    if job_path.trim().is_empty() {
+        return Err("Resume render path cannot be empty".into());
+    }
+
+    let path = Path::new(job_path);
+    if path.is_absolute() {
+        return Err("Resume render path must be workspace-relative".into());
+    }
+
+    let mut has_personalized_resume = false;
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => {
+                if part.to_string_lossy() == "personalized-resume" {
+                    has_personalized_resume = true;
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err("Resume render path cannot contain parent, root, or prefix components".into());
+            }
+        }
+    }
+
+    if !has_personalized_resume {
+        return Err("PDF rendering is only allowed for resume.md files under personalized-resume/ folders. The provided path does not contain personalized-resume/.".into());
+    }
+
+    Ok(())
+}
+
 /// Validates a resume.md file at the given project/job path.
 #[tauri::command]
 pub fn validate_resume(input: ResumeInput) -> Result<ValidationResult, String> {
@@ -594,6 +634,7 @@ pub fn validate_resume(input: ResumeInput) -> Result<ValidationResult, String> {
 /// Does not write intermediate .typ files to the workspace.
 #[tauri::command]
 pub fn render_resume_pdf(input: ResumeInput) -> Result<RenderOutput, String> {
+    validate_personalized_resume_job_path(&input.job_path)?;
     let project = super::project_root(&input.project_slug)?;
     let job_dir = project.join(&input.job_path);
     let pdf_path = job_dir.join("resume.pdf");
@@ -706,6 +747,60 @@ pub fn list_skills() -> Vec<SkillInfo> {
     }).collect()
 }
 
+pub const SKILL_RESUME_BUILDER_ALL: &str = concat!(
+    "## /resume-builder-all — Tailor all selected job resumes\n",
+    "\n",
+    "Use this when the user types /resume-builder-all or asks to build/tailor all resumes for jobs in a hunt folder.\n",
+    "\n",
+    "### Required inputs\n",
+    "- Ask the user for the target jobs folder when it is not explicit. It should look like `hunt_run/<hunt-slug>/jobs-YYYY-MM-DD/`.\n",
+    "- Read `profile/RESUME.md` for the base resume structure and resume facts.\n",
+    "- Read `profile/USER.md` for user preferences, background, tone, constraints, and positioning.\n",
+    "- Read every `.md` job file inside the provided jobs folder. Skip non-Markdown files.\n",
+    "\n",
+    "### Output location\n",
+    "For each job file, write exactly one personalized resume at:\n",
+    "`hunt_run/<hunt-slug>/personalized-resume/<job-file-stem>/resume.md`\n",
+    "where `<job-file-stem>` is the job file name without `.md` (for example `001-product-engineer-acme`).\n",
+    "\n",
+    "### Resume.md schema\n",
+    "Preserve the same Markdown/frontmatter structure accepted by the app renderer:\n",
+    "```\n",
+    "---\n",
+    "name: \"...\"\n",
+    "email: \"...\"\n",
+    "phone: \"...\"\n",
+    "location: \"...\"\n",
+    "linkedin: \"...\"\n",
+    "summary: |\n",
+    "  A concise tailored summary...\n",
+    "---\n",
+    "\n",
+    "## Experience\n",
+    "\n",
+    "### Title | Company | Dates\n",
+    "- Bullet point tailored to the job.\n",
+    "\n",
+    "## Skills\n",
+    "Skill1, Skill2, Skill3\n",
+    "\n",
+    "## Education\n",
+    "Degree | Institution | Year\n",
+    "```\n",
+    "\n",
+    "### Tailoring rules\n",
+    "- Do not invent employers, dates, degrees, certifications, or metrics not supported by profile files.\n",
+    "- Reorder and emphasize existing facts to match each job's requirements.\n",
+    "- Keep each resume concise and ATS-friendly.\n",
+    "- Use the job description keywords naturally when they match true user experience.\n",
+    "- Report the list of generated `resume.md` paths when finished.\n",
+    "\n",
+    "### Rendering PDFs\n",
+    "- PDF rendering is allowed only for `personalized-resume/.../resume.md`.\n",
+    "- If the user explicitly asks to render, use the `render_resume` tool with the generated resume file path.\n",
+    "- Otherwise, generate Markdown first and tell the user they can open any `resume.md` and click Render PDF.\n",
+);
+
 pub const SKILL_FIX_RENDER: &str = concat!(
     "## /fix-render — Resume PDF debug skill\n",
     "\n",
@@ -736,17 +831,17 @@ pub const SKILL_FIX_RENDER: &str = concat!(
     "```\n",
     "\n",
     "### Common validation issues\n",
-    "- Missing `name:` or `email:` in frontmatter → read `profile/resume.md` for the user's info, fill it in.\n",
+    "- Missing `name:` or `email:` in frontmatter → read `profile/RESUME.md` for the user's info, fill it in.\n",
     "- Experience item missing company → format should be `### Title | Company | Dates`. If pipes are missing, add them.\n",
     "- Missing `## Experience` section → create one with at least one entry.\n",
-    "- Missing `## Skills` section → recommended but not required, add from profile/resume.md if available.\n",
+    "- Missing `## Skills` section → recommended but not required, add from `profile/RESUME.md` if available.\n",
     "\n",
     "### Workflow\n",
     "1. Read `resume.md` from the job path using `read_file`.\n",
     "2. Check each section against the schema above.\n",
     "3. Fix issues using `write_file` — only edit `resume.md`, never `.typ` or `.pdf`.\n",
-    "4. For missing user info (name, email), read `profile/resume.md` from the workspace root.\n",
-    "5. After fixing, tell the user the .md is clean and ask them to click the Render button in the UI to generate the PDF.\n",
+    "4. For missing user info (name, email), read `profile/RESUME.md` from the workspace root.\n",
+    "5. Only render files under `personalized-resume/.../resume.md`. After fixing an eligible file, use the `render_resume` tool when the user asked you to render, or tell them to click Render PDF in the UI.\n",
     "\n",
     "### PDF generation\n",
     "PDF rendering is done by the bundled Typst binary (not pdflatex). The render command\n",
