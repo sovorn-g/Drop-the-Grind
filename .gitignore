@@ -11,8 +11,11 @@ src-tauri/target/
 # Local convenience scripts
 build.sh
 
-# Subagent investigation artifacts
-docs/subagent/
+# Documentation — not application code
+docs/
+AGENTS.md
+DESIGN.md
+PROJECT.md
 
 # Dev setup scripts (Typst bundled via Tauri resources)
 scripts/
