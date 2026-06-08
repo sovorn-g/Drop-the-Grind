@@ -98,6 +98,11 @@ pub const SKILLS: &[Skill] = &[
         description: "Tailor one personalized resume for every job in a selected hunt jobs folder",
         keyword_patterns: &["/resume-builder-all", "resume-builder-all", "resume builder all", "build all resumes", "tailor all resumes", "personalized resumes for all jobs"],
     },
+    Skill {
+        name: "/resume-builder",
+        description: "Tailor the user's base resume to match one or more job descriptions",
+        keyword_patterns: &["/resume-builder", "resume-builder", "build resume", "tailor resume", "tailored resume", "build resumes", "tailor resumes", "build tailored resumes"],
+    },
 ];
 
 /// Renders the skill list for inclusion in the agent system prompt.
@@ -127,6 +132,7 @@ pub fn skill_instructions(name: &str) -> Option<&'static str> {
     match name {
         "/fix-render" => Some(SKILL_FIX_RENDER),
         "/resume-builder-all" => Some(SKILL_RESUME_BUILDER_ALL),
+        "/resume-builder" => Some(SKILL_RESUME_BUILDER),
         _ => None,
     }
 }
@@ -847,4 +853,41 @@ pub const SKILL_FIX_RENDER: &str = concat!(
     "PDF rendering is done by the bundled Typst binary (not pdflatex). The render command\n",
     "reads `resume.md`, generates a temporary Typst document, and compiles it to `resume.pdf`.\n",
     "Intermediate `.typ` files are NOT written to the workspace.\n",
+);
+
+pub const SKILL_RESUME_BUILDER: &str = concat!(
+    "## /resume-builder\n",
+    "\n",
+    "Tailors the user's base resume to match one or more job descriptions.\n",
+    "\n",
+    "### Workflow\n",
+    "\n",
+    "1. The user will provide either:\n",
+    "   - A single job .md file (from hunt_run/ or import-links/)\n",
+    "   - A folder containing job .md files (from hunt_run/ or import-links/)\n",
+    "\n",
+    "2. Read the user's base resume and context:\n",
+    "   - Read `profile/RESUME.md` for the user's complete experience, skills, and style.\n",
+    "   - Read `profile/USER.md` for goals, constraints, and preferences.\n",
+    "   - Optionally read `profile/RESUME_TEMPLATE.md` for structure reference.\n",
+    "\n",
+    "3. Tailor the resume:\n",
+    "   - Reorder skills to match what the job asks for, in the order they ask.\n",
+    "   - Rephrase bullet points using keywords from the job description where the user's real experience supports it.\n",
+    "   - Emphasize relevant experience — move matching roles/projects higher.\n",
+    "   - Match the positioning line / summary to the target role.\n",
+    "   - Preserve the user's voice, wording style, and section structure from the base resume.\n",
+    "   - Do NOT invent any experience, skills, dates, employers, or credentials not in the base resume.\n",
+    "   - Do NOT add qualifications the user doesn't have.\n",
+    "\n",
+    "4. Write output:\n",
+    "   - Single file: write to `resume/<source-path-with-parent-prefix>.md`\n",
+    "     Example: job file `hunt_run/yc-1/jobs-2026-06-06/001-full-stack-engineer.md`\n",
+    "     → Output: `resume/hunt_run/yc-1-001-full-stack-engineer.md`\n",
+    "   - Batch folder: write all tailored resumes into `resume/<source-folder>/`\n",
+    "     Example: folder `hunt_run/yc-1/jobs-2026-06-06/` (containing 001-*.md, 002-*.md, ...)\n",
+    "     → Output: `resume/hunt_run/yc-1/jobs-2026-06-06/001-full-stack-engineer.md`,\n",
+    "               `resume/hunt_run/yc-1/jobs-2026-06-06/002-backend-engineer.md`, etc.\n",
+    "\n",
+    "5. After writing, inform the user what was created and where.\n",
 );
