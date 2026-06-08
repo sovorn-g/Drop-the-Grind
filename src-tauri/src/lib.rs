@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection};
 use serde_json::Value;
-use std::{collections::{HashMap, hash_map::DefaultHasher}, fs, hash::{Hash, Hasher}, io::{BufRead, BufReader, Write}, path::{Path, PathBuf}, process::{Command, Stdio}, sync::{mpsc, Mutex}, thread, time::Duration};
+use std::{collections::{HashMap, VecDeque, hash_map::DefaultHasher}, fs, hash::{Hash, Hasher}, io::{BufRead, BufReader, Write}, path::{Path, PathBuf}, process::{Command, Stdio}, sync::{mpsc, Arc, Condvar, Mutex}, thread, time::{Duration, Instant}};
 use tauri::{ipc::Channel, AppHandle, Emitter, State};
 
 mod resume;
@@ -256,59 +256,6 @@ struct FirecrawlScrapeData {
     pub metadata: Option<FirecrawlMetadata>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct FirecrawlBatchStart {
-    pub success: bool,
-    pub id: Option<String>,
-    #[serde(default)]
-    pub invalid_urls: Option<Vec<String>>,
-    #[serde(default)]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct FirecrawlBatchStatus {
-    pub status: Option<String>,
-    pub total: Option<i64>,
-    pub completed: Option<i64>,
-    #[serde(default)]
-    pub credits_used: Option<i64>,
-    #[serde(default)]
-    pub next: Option<String>,
-    #[serde(default)]
-    pub data: Option<Vec<FirecrawlBatchPage>>,
-    #[serde(default)]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct FirecrawlBatchPage {
-    #[serde(default)]
-    pub markdown: Option<String>,
-    #[serde(default)]
-    pub metadata: Option<FirecrawlMetadata>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct FirecrawlBatchErrors {
-    #[serde(default)]
-    pub errors: Option<Vec<FirecrawlBatchErrorItem>>,
-    #[serde(default)]
-    pub robots_blocked: Option<Vec<String>>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct FirecrawlBatchErrorItem {
-    pub id: Option<String>,
-    pub url: Option<String>,
-    pub error: Option<String>,
-}
-
 // Normalized internal type for extraction results
 #[derive(Debug, Clone)]
 struct ImportedExtractPage {
@@ -318,6 +265,14 @@ struct ImportedExtractPage {
     pub title: Option<String>,
     pub content: String,
     pub error: Option<String>,
+    pub provider: String,
+}
+
+// Backend keys for Import Links multi-provider extraction
+#[derive(Debug, Clone, Default)]
+struct ExtractionBackendKeys {
+    pub firecrawl_key: Option<String>,
+    pub tavily_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -904,6 +859,12 @@ fn emit_event(ch: &Channel<AgentRunEvent>, run_id: &str, kind: &str, text: impl 
 fn emit_event_payload(ch: &Channel<AgentRunEvent>, run_id: &str, kind: &str, text: impl Into<String>, payload: serde_json::Value) {
     let _ = ch.send(AgentRunEvent{run_id: run_id.to_string(), kind: kind.to_string(), text: text.into(), payload: Some(payload)});
 }
+fn import_timing_label() -> String {
+    chrono::Local::now().format("%H:%M:%S%.3f").to_string()
+}
+fn import_timing_ms(start: Instant) -> u128 {
+    start.elapsed().as_millis()
+}
 
 fn actor_api_slug(slug: &str) -> String { slug.replace('/', "~") }
 fn hunt_roles_query(h: &HuntRunInput) -> String {
@@ -1180,214 +1141,126 @@ fn dedupe_import_urls(urls: &[String]) -> Vec<String> {
     result
 }
 
-#[derive(Debug, Clone)]
-struct ImportedJobDraft {
-    title: String,
-    company: String,
-    location: String,
-    salary: String,
-    posted: String,
-    deadline: String,
-    description: String,
-}
+fn light_clean_import_content(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut output: Vec<String> = Vec::new();
+    let mut seen_links: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut prose_content_len = 0usize;
+    const MIN_PROSE_THRESHOLD: usize = 1000; // Only truncate footer after 1000+ chars of content
 
-fn clean_import_line(line: &str) -> String {
-    line.split_whitespace().collect::<Vec<_>>().join(" ").trim().to_string()
-}
+    for line in lines {
+        let trimmed = line.trim();
 
-fn import_title_from_content(url: &str, content: &str) -> String {
-    for line in content.lines() {
-        let trimmed = clean_import_line(line);
-        if !trimmed.is_empty() && trimmed.len() < 200 && !is_import_noise_line(&trimmed) {
-            return trimmed.chars().take(120).collect();
-        }
-    }
-    let url_path = url.split('/').filter(|s| !s.is_empty()).last().unwrap_or(url);
-    url_path.replace('-', " ").replace('_', " ").chars().take(80).collect()
-}
-
-fn domain_from_url(url: &str) -> String {
-    let without_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    let host = without_scheme.split('/').next().unwrap_or("");
-    host.trim_start_matches("www.").split('.').next().unwrap_or("").replace('-', " ")
-}
-
-fn title_from_page_title(page_title: &str) -> String {
-    let base = page_title.split('|').next().unwrap_or(page_title).trim();
-    for sep in [" hiring ", " at ", " - ", " | "] {
-        if let Some((_, rhs)) = base.split_once(sep) {
-            let title = rhs.rsplit_once(" in ").map(|(t, _)| t).unwrap_or(rhs).trim();
-            if !title.is_empty() { return title.chars().take(120).collect(); }
-        }
-    }
-    base.chars().take(120).collect()
-}
-
-fn imported_content_lines(content: &str) -> Vec<String> {
-    content.lines().map(clean_import_line).filter(|l| !l.is_empty()).collect()
-}
-
-fn is_import_noise_line(line: &str) -> bool {
-    let l = line.to_lowercase();
-    [
-        "join or sign in", "new to linkedin", "by clicking continue", "user agreement", "privacy policy",
-        "cookie policy", "save", "report this job", "see who you know", "sign in to create job alert",
-        "linkedin is better on the app", "don't have the app", "open the app", "get the app",
-        "find curated posts", "never miss a job alert", "referrals increase your chances",
-    ].iter().any(|needle| l.contains(needle))
-}
-
-fn is_import_stop_line(line: &str) -> bool {
-    let l = line.to_lowercase();
-    [
-        "similar jobs", "people also viewed", "explore top content", "know when new jobs open up", "get notified about new",
-        "where to apply", "share this page", "jobs & opportunities", "useful information", "legal information", "follow us",
-    ].iter().any(|needle| l.contains(needle))
-}
-
-fn import_label_value(lines: &[String], label: &str) -> String {
-    let label_l = label.to_lowercase();
-    let known_labels = [
-        "organisation/company", "organization/company", "department", "research field", "researcher profile", "positions",
-        "application deadline", "country", "type of contract", "job status", "hours per week", "offer description",
-        "city", "website", "street", "postal code", "e-mail", "contact", "work location(s)", "company/institute",
-    ];
-    for (i, line) in lines.iter().enumerate() {
-        if line.to_lowercase() == label_l {
-            for value in lines.iter().skip(i + 1).take(4) {
-                let lower = value.to_lowercase();
-                if value.is_empty() || known_labels.contains(&lower.as_str()) { continue; }
-                return value.clone();
-            }
-        }
-    }
-    String::new()
-}
-
-fn extract_relative_posted(line: &str) -> String {
-    let words = line.split_whitespace().collect::<Vec<_>>();
-    for i in 0..words.len() {
-        let w = words[i].trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-        if ["minute", "minutes", "hour", "hours", "day", "days", "week", "weeks", "month", "months", "year", "years"].contains(&w.as_str()) && i + 1 < words.len() && words[i + 1].eq_ignore_ascii_case("ago") {
-            let prev = if i > 0 { words[i - 1].trim_matches(|c: char| !c.is_alphanumeric()) } else { "" };
-            if !prev.is_empty() {
-                return format!("{} {} ago", prev, words[i].trim_matches(|c: char| !c.is_alphanumeric()));
-            }
-        }
-    }
-    String::new()
-}
-
-fn extract_salary(lines: &[String]) -> String {
-    for line in lines.iter().take(80) {
-        let has_currency = line.contains('$') || line.contains('£') || line.contains('€');
-        let has_digit = line.chars().any(|c| c.is_ascii_digit());
-        if has_currency && has_digit && line.len() <= 180 {
-            return line.chars().take(160).collect();
-        }
-    }
-    String::new()
-}
-
-fn clean_import_description(lines: &[String]) -> String {
-    let priority_markers = ["offer description", "job description", "description", "about ", "the role"];
-    let fallback_markers = ["what you", "responsibilities", "requirements", "essential qualifications"];
-    let mut start_idx = None;
-    for marker in priority_markers {
-        if let Some(i) = lines.iter().position(|line| line.to_lowercase().starts_with(marker)) {
-            start_idx = Some(i);
-            break;
-        }
-    }
-    if start_idx.is_none() {
-        for marker in fallback_markers {
-            if let Some(i) = lines.iter().position(|line| line.to_lowercase().starts_with(marker)) {
-                start_idx = Some(i);
-                break;
-            }
-        }
-    }
-
-    let mut out = Vec::new();
-    for line in lines.iter().skip(start_idx.unwrap_or(0)) {
-        if is_import_stop_line(line) { break; }
-        if is_import_noise_line(line) { continue; }
-        out.push(line.clone());
-    }
-    let desc = out.join("\n");
-    let desc = desc.chars().take(12000).collect::<String>().trim().to_string();
-    if desc.is_empty() { "No extracted job description was returned. Use the original URL for additional context.".into() } else { desc }
-}
-
-fn parse_imported_job(_original_url: &str, extract_url: &str, page_title: Option<&str>, content: &str) -> ImportedJobDraft {
-    let lines = imported_content_lines(content);
-    let mut title = page_title.map(title_from_page_title).unwrap_or_default();
-    let mut company = String::new();
-    let mut location = String::new();
-    let mut posted = String::new();
-
-    if extract_url.contains("linkedin.com") {
-        if let Some(pt) = page_title {
-            let base = pt.split('|').next().unwrap_or(pt).trim();
-            if let Some((co, rest)) = base.split_once(" hiring ") {
-                company = co.trim().to_string();
-                if let Some((t, loc)) = rest.rsplit_once(" in ") {
-                    title = t.trim().to_string();
-                    location = loc.trim().to_string();
-                }
-            }
-        }
-        if title.is_empty() { title = lines.first().cloned().unwrap_or_default(); }
-        if company.is_empty() || location.is_empty() {
-            if let Some(line) = lines.get(1) {
-                if company.is_empty() {
-                    let title_words = title.split_whitespace().count();
-                    let parts = line.split_whitespace().collect::<Vec<_>>();
-                    if parts.len() > title_words.min(3) {
-                        company = parts.first().unwrap_or(&"").to_string();
-                    }
-                }
-                if location.is_empty() && !company.is_empty() {
-                    location = line.strip_prefix(&company).unwrap_or(line).trim().to_string();
-                }
-            }
-        }
-    }
-
-    if title.is_empty() { title = import_title_from_content(extract_url, content); }
-
-    let labeled_company = import_label_value(&lines, "Organisation/Company");
-    if company.is_empty() && !labeled_company.is_empty() { company = labeled_company; }
-    let deadline = import_label_value(&lines, "Application Deadline");
-    let country = import_label_value(&lines, "Country");
-    let city = import_label_value(&lines, "City");
-    if location.is_empty() {
-        location = match (city.is_empty(), country.is_empty()) {
-            (false, false) => format!("{city}, {country}"),
-            (false, true) => city,
-            (true, false) => country,
-            (true, true) => String::new(),
+        // Step 1: Strip bare markdown links (full doc dedup)
+        // Handles: [text](url), * [text](url), *   [text](url), - [text](url), 1. [text](url)
+        // Also handles links with trailing noise: [text](url)ExtraText
+        let after_list_prefix = if trimmed.starts_with('*') || trimmed.starts_with('-') {
+            trimmed.trim_start_matches(|c: char| c == '*' || c == '-' || c == ' ').to_string()
+        } else if trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            // Handle numbered lists like "1.   [text](url)"
+            trimmed.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ').to_string()
+        } else {
+            trimmed.to_string()
         };
-    }
-    if company.is_empty() { company = domain_from_url(extract_url); }
-    for line in lines.iter().take(40) {
-        if posted.is_empty() { posted = extract_relative_posted(line); }
-        if location.is_empty() && (line.contains(", ") || line.eq_ignore_ascii_case("remote")) && line.len() < 140 && !line.contains("http") {
-            location = line.clone();
+        
+        // If line starts with [ and contains ](, it's a link - skip it
+        if after_list_prefix.starts_with('[') && after_list_prefix.contains("](") {
+            // Use the link portion as dedup key (up to first closing paren after ]()
+            let link_key = if let Some(url_start) = after_list_prefix.find("](") {
+                if let Some(rel_end) = after_list_prefix[url_start + 2..].find(')') {
+                    &after_list_prefix[..url_start + 2 + rel_end + 1]
+                } else {
+                    &after_list_prefix
+                }
+            } else {
+                &after_list_prefix
+            };
+            
+            if seen_links.contains(link_key) {
+                continue; // Duplicate link
+            }
+            seen_links.insert(link_key.to_string());
+            continue; // Skip all bare links
         }
-        if !posted.is_empty() && !location.is_empty() { break; }
+
+        // Step 2: Strip image lines
+        if trimmed.starts_with("![") {
+            continue;
+        }
+
+        // Step 3: Strip noise keywords
+        let lower = trimmed.to_lowercase();
+        const NOISE_KEYWORDS: &[&str] = &[
+            "cookie", "sign in", "log in", "skip to main", "accept all",
+            "javascript must be enabled", "your browser is outdated", "session expired",
+        ];
+        if NOISE_KEYWORDS.iter().any(|kw| lower.contains(kw)) {
+            continue;
+        }
+
+        // Step 5: Footer truncation with threshold (before adding to output)
+        const FOOTER_MARKERS: &[&str] = &[
+            "share this page", "follow us", "useful information", "legal information",
+            "jobs & opportunities", "similar jobs", "people also viewed",
+        ];
+        if prose_content_len >= MIN_PROSE_THRESHOLD && FOOTER_MARKERS.iter().any(|m| lower.contains(m)) {
+            break; // Stop processing - we've hit the footer
+        }
+
+        // Step 4: Consecutive prose dedup (only for non-empty lines)
+        if !trimmed.is_empty() {
+            if let Some(last) = output.last() {
+                if last.trim() == trimmed {
+                    continue; // Skip consecutive duplicate
+                }
+            }
+            prose_content_len += trimmed.len();
+        }
+
+        // Step 6: Artifact cleanup
+        let cleaned = trimmed
+            .replace('\u{00A0}', " ") // Non-breaking spaces
+            .trim()
+            .to_string();
+
+        if !cleaned.is_empty() || !output.last().map_or(false, |l| l.is_empty()) {
+            output.push(cleaned);
+        }
     }
 
-    ImportedJobDraft {
-        title: title.trim().chars().take(120).collect(),
-        company: company.trim().chars().take(120).collect(),
-        location: location.trim().chars().take(160).collect(),
-        salary: extract_salary(&lines),
-        posted,
-        deadline,
-        description: clean_import_description(&lines),
+    // Collapse 3+ consecutive blank lines to 1
+    let mut final_output: Vec<String> = Vec::new();
+    let mut blank_count = 0;
+    for line in output {
+        if line.is_empty() {
+            blank_count += 1;
+            if blank_count <= 2 {
+                final_output.push(line);
+            }
+        } else {
+            blank_count = 0;
+            final_output.push(line);
+        }
     }
+
+    // Strip excessive --- dividers (keep max 1)
+    let mut result: Vec<String> = Vec::new();
+    let mut divider_count = 0;
+    for line in final_output {
+        if line == "---" || line == "* * *" {
+            divider_count += 1;
+            if divider_count <= 1 {
+                result.push(line);
+            }
+        } else {
+            divider_count = 0;
+            result.push(line);
+        }
+    }
+
+    result.join("\n")
 }
+
 
 fn query_param(url: &str, name: &str) -> Option<String> {
     let query = url.split_once('?')?.1.split_once('#').map(|(q, _)| q).unwrap_or_else(|| url.split_once('?').unwrap().1);
@@ -1410,27 +1283,60 @@ fn canonical_import_url(url: &str) -> String {
     trimmed.to_string()
 }
 
-fn import_source_name(url: &str) -> &'static str {
-    if url.contains("linkedin.com") { "LinkedIn Import" } else { "Imported Link" }
+fn firecrawl_unsupported_import_url(url: &str) -> Option<&'static str> {
+    // Firecrawl explicitly rejects LinkedIn. Keep this list small and explicit so
+    // future unsupported sites can be added without changing extraction flow.
+    const UNSUPPORTED_DOMAINS: &[(&str, &str)] = &[
+        ("linkedin.com", "Firecrawl does not support LinkedIn"),
+    ];
+    let lower = url.to_lowercase();
+    UNSUPPORTED_DOMAINS
+        .iter()
+        .find_map(|(domain, reason)| if lower.contains(domain) { Some(*reason) } else { None })
 }
 
-fn import_link_file_name(idx: usize, url: &str) -> String {
-    let slug = slugify(url.split('/').filter(|s| !s.is_empty()).last().unwrap_or("link"));
-    let safe_slug = if slug.is_empty() { "link".to_string() } else { slug };
-    format!("{:03}-{}.md", idx, safe_slug.chars().take(48).collect::<String>())
+fn tavily_unsupported_import_url(url: &str) -> Option<&'static str> {
+    // Tavily failed to fetch Indeed job pages in local tests; route these to
+    // Firecrawl first while keeping Tavily available as final fallback.
+    const UNSUPPORTED_DOMAINS: &[(&str, &str)] = &[
+        ("indeed.com", "Tavily failed to extract Indeed job pages in testing"),
+    ];
+    let lower = url.to_lowercase();
+    UNSUPPORTED_DOMAINS
+        .iter()
+        .find_map(|(domain, reason)| if lower.contains(domain) { Some(*reason) } else { None })
 }
 
-fn import_link_markdown(original_url: &str, extract_url: &str, job: &ImportedJobDraft) -> String {
-    let title = if job.title.is_empty() { "Imported job" } else { &job.title };
-    let title_line = if job.company.is_empty() { title.to_string() } else { format!("{title} — {}", job.company) };
-    let source = import_source_name(extract_url);
-    format!("# {title_line}\n\n## Job Metadata\n\n- Source: {source}\n- Company: {company}\n- Location: {location}\n- Salary: {salary}\n- Posted: {posted}\n- Deadline: {deadline}\n- Apply: {extract_url}\n- Original URL: {original_url}\n\n## Description\n\n{description}\n",
-        company = job.company,
-        location = job.location,
-        salary = job.salary,
-        posted = job.posted,
-        deadline = job.deadline,
-        description = job.description)
+type FirecrawlLimiter = Arc<(Mutex<usize>, Condvar)>;
+
+fn acquire_firecrawl_slot(limiter: &FirecrawlLimiter) {
+    let (lock, cvar) = &**limiter;
+    let mut available = lock.lock().unwrap();
+    while *available == 0 {
+        available = cvar.wait(available).unwrap();
+    }
+    *available -= 1;
+}
+
+fn release_firecrawl_slot(limiter: &FirecrawlLimiter) {
+    let (lock, cvar) = &**limiter;
+    let mut available = lock.lock().unwrap();
+    *available += 1;
+    cvar.notify_one();
+}
+
+fn import_link_file_name(idx: usize, title: &str) -> String {
+    let slug = slugify(title).chars().take(48).collect::<String>();
+    let safe_slug = if slug.is_empty() { "imported-page".to_string() } else { slug };
+    format!("{:03}-{}.md", idx, safe_slug)
+}
+
+fn import_link_markdown(original_url: &str, page_title: Option<&str>, content: &str, provider: &str) -> String {
+    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let cleaned_content = light_clean_import_content(content);
+    let content_body = if cleaned_content.is_empty() { content.to_string() } else { cleaned_content };
+    let heading = page_title.unwrap_or("Imported Page");
+    format!("# {heading}\n\n- URL: {original_url}\n- Extracted: {now_str}\n\n---\n\n{content_body}\n")
 }
 
 // --- Firecrawl Import Link helpers ---
@@ -1495,6 +1401,7 @@ fn firecrawl_scrape_url(key: &str, url: &str, on_event: &Channel<AgentRunEvent>,
             title: None,
             content: String::new(),
             error: Some(err),
+            provider: "Firecrawl".to_string(),
         });
     }
 
@@ -1516,189 +1423,10 @@ fn firecrawl_scrape_url(key: &str, url: &str, on_event: &Channel<AgentRunEvent>,
         title,
         content: markdown,
         error: None,
+        provider: "Firecrawl".to_string(),
     })
 }
 
-fn firecrawl_start_batch_scrape(key: &str, urls: &[String], on_event: &Channel<AgentRunEvent>, run_id: &str) -> Result<String, String> {
-    let opts = firecrawl_scrape_options_body();
-    let body = serde_json::json!({
-        "urls": urls,
-        "formats": opts["formats"],
-        "onlyMainContent": opts["onlyMainContent"],
-        "onlyCleanContent": opts["onlyCleanContent"],
-        "timeout": opts["timeout"],
-        "proxy": opts["proxy"],
-        "blockAds": opts["blockAds"],
-        "removeBase64Images": opts["removeBase64Images"],
-        "ignoreInvalidURLs": true
-    });
-
-    let (v, http_ok) = execute_firecrawl_request("POST", "/batch/scrape", key, Some(&body))?;
-
-    if !http_ok {
-        let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Unknown batch scrape error").to_string();
-        return Err(format!("Firecrawl batch scrape failed: {err}"));
-    }
-
-    let success = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
-    if !success {
-        let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Unknown batch scrape error").to_string();
-        return Err(format!("Firecrawl batch scrape not successful: {err}"));
-    }
-
-    let batch_id = v.get("id").and_then(|x| x.as_str()).ok_or("Firecrawl batch scrape did not return an id")?.to_string();
-
-    // Emit invalid URLs if any
-    if let Some(invalid) = v.get("invalidURLs").and_then(|x| x.as_array()) {
-        if !invalid.is_empty() {
-            let invalid_strs: Vec<String> = invalid.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
-            emit_event(on_event, run_id, "debug", format!("Firecrawl invalid URLs: {}", invalid_strs.join(", ")));
-        }
-    }
-
-    Ok(batch_id)
-}
-
-fn firecrawl_poll_batch_scrape(key: &str, batch_id: &str, url_mappings: &[(String, String)], on_event: &Channel<AgentRunEvent>, run_id: &str) -> Result<Vec<ImportedExtractPage>, String> {
-    let endpoint = format!("/batch/scrape/{}", batch_id);
-    let max_polls = 60;
-    let mut all_pages: Vec<ImportedExtractPage> = Vec::new();
-
-    for poll in 0..max_polls {
-        thread::sleep(Duration::from_secs(2));
-
-        let (v, http_ok) = execute_firecrawl_request("GET", &endpoint, key, None)?;
-
-        if !http_ok {
-            let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Unknown batch status error").to_string();
-            emit_event(on_event, run_id, "debug", format!("Firecrawl batch status HTTP error: {err}"));
-            if poll >= 5 {
-                return Err(format!("Firecrawl batch status failed after {} polls: {err}", poll + 1));
-            }
-            continue;
-        }
-
-        let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("unknown").to_string();
-        let completed = v.get("completed").and_then(|x| x.as_i64()).unwrap_or(0);
-        let total = v.get("total").and_then(|x| x.as_i64()).unwrap_or(0);
-
-        emit_event(on_event, run_id, "status", format!("Firecrawl batch: {status} ({completed}/{total})"));
-
-        // Collect data from current response (including "next" pages)
-        all_pages.append(&mut firecrawl_collect_batch_data(&v, url_mappings));
-
-        // Follow next pages if present
-        if let Some(next_url) = v.get("next").and_then(|x| x.as_str()).map(|s| s.to_string()) {
-            emit_event(on_event, run_id, "debug", "Firecrawl batch fetching next page");
-            let next_result = firecrawl_fetch_batch_next(key, &next_url, url_mappings);
-            if let Ok(mut more_pages) = next_result {
-                all_pages.append(&mut more_pages);
-            }
-        }
-
-        if status == "completed" {
-            if let Some(credits) = v.get("creditsUsed").and_then(|x| x.as_i64()) {
-                emit_event(on_event, run_id, "debug", format!("Firecrawl batch completed: {completed}/{total} pages, credits used: {credits}"));
-            } else {
-                emit_event(on_event, run_id, "debug", format!("Firecrawl batch completed: {completed}/{total} pages"));
-            }
-            break;
-        }
-
-        if status == "failed" {
-            let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("Batch scrape failed").to_string();
-            emit_event(on_event, run_id, "debug", format!("Firecrawl batch failed: {err}"));
-            // Try to get batch errors for diagnostics
-            if let Ok(errors_result) = firecrawl_get_batch_errors(key, batch_id) {
-                for err_item in errors_result {
-                    emit_event(on_event, run_id, "debug", format!("Firecrawl batch error detail: url={:?}, error={:?}", err_item.url, err_item.error));
-                }
-            }
-            return Err(err);
-        }
-    }
-
-    Ok(all_pages)
-}
-
-fn firecrawl_collect_batch_data(v: &serde_json::Value, url_mappings: &[(String, String)]) -> Vec<ImportedExtractPage> {
-    let mut pages = Vec::new();
-    if let Some(data) = v.get("data").and_then(|x| x.as_array()) {
-        for item in data {
-            let markdown = item.get("markdown").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let page_title = item.pointer("/metadata/title").and_then(|x| match x {
-                serde_json::Value::String(s) => Some(s.clone()),
-                serde_json::Value::Array(arr) => arr.first().and_then(|v| v.as_str().map(|s| s.to_string())),
-                _ => None,
-            });
-            let final_url = item.pointer("/metadata/url").and_then(|x| x.as_str()).map(|s| s.to_string());
-            let source_url = item.pointer("/metadata/sourceURL").and_then(|x| x.as_str()).map(|s| s.to_string());
-            let page_error = item.pointer("/metadata/error").and_then(|x| x.as_str()).map(|s| s.to_string());
-
-            let extract_url = source_url.clone().unwrap_or_default();
-
-            // Find original URL from mapping
-            let original_url = if !extract_url.is_empty() {
-                url_mappings.iter()
-                    .find(|(_, c)| c == &extract_url)
-                    .map(|(o, _)| o.clone())
-                    .or_else(|| {
-                        final_url.as_ref().and_then(|fu| {
-                            url_mappings.iter()
-                                .find(|(_, c)| c == fu)
-                                .map(|(o, _)| o.clone())
-                        })
-                    })
-                    .unwrap_or_else(|| extract_url.clone())
-            } else {
-                String::new()
-            };
-
-            pages.push(ImportedExtractPage {
-                original_url,
-                extract_url: source_url.unwrap_or_default(),
-                final_url,
-                title: page_title,
-                content: markdown,
-                error: page_error,
-            });
-        }
-    }
-    pages
-}
-
-fn firecrawl_fetch_batch_next(key: &str, next_url: &str, url_mappings: &[(String, String)]) -> Result<Vec<ImportedExtractPage>, String> {
-    let (v, _http_ok) = execute_firecrawl_request("GET", next_url, key, None)?;
-    Ok(firecrawl_collect_batch_data(&v, url_mappings))
-}
-
-fn firecrawl_get_batch_errors(key: &str, batch_id: &str) -> Result<Vec<FirecrawlBatchErrorItem>, String> {
-    let endpoint = format!("/batch/scrape/{}/errors", batch_id);
-    let (v, _http_ok) = execute_firecrawl_request("GET", &endpoint, key, None)?;
-
-    let mut items = Vec::new();
-    if let Some(errors) = v.get("errors").and_then(|x| x.as_array()) {
-        for item in errors {
-            items.push(FirecrawlBatchErrorItem {
-                id: item.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                url: item.get("url").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                error: item.get("error").and_then(|x| x.as_str()).map(|s| s.to_string()),
-            });
-        }
-    }
-    if let Some(robots_blocked) = v.get("robotsBlocked").and_then(|x| x.as_array()) {
-        for url_val in robots_blocked {
-            if let Some(u) = url_val.as_str() {
-                items.push(FirecrawlBatchErrorItem {
-                    id: None,
-                    url: Some(u.to_string()),
-                    error: Some("Blocked by robots.txt".to_string()),
-                });
-            }
-        }
-    }
-    Ok(items)
-}
 
 #[tauri::command]
 fn import_job_links(input: ImportJobLinksInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
@@ -1713,15 +1441,41 @@ fn import_job_links(input: ImportJobLinksInput, on_event: Channel<AgentRunEvent>
     let import_base = format!("import-links/{}", folder_name);
     let folder_path = match safe_project_path(&input.project_slug, &import_base) { Ok(p) => p, Err(e) => { return Err(e); } };
 
-    // Read Firecrawl API key early
-    let firecrawl_key = match read_firecrawl_key() {
-        Ok(Some(key)) => key,
-        Ok(None) => return Err("Firecrawl API key is missing. Add firecrawlApiKey to settings.".into()),
-        Err(e) => return Err(format!("Could not read Firecrawl API key: {e}")),
+    // Load both API keys optionally
+    let firecrawl_key: Option<String> = match read_firecrawl_key() {
+        Ok(Some(key)) => Some(key),
+        Ok(None) => None,
+        Err(e) => {
+            emit_event(&on_event, &run_id, "debug", format!("Could not read Firecrawl API key: {e}"));
+            None
+        }
     };
+    let tavily_key: Option<String> = match read_tavily_key() {
+        Ok(Some(key)) => Some(key),
+        Ok(None) => None,
+        Err(e) => {
+            emit_event(&on_event, &run_id, "debug", format!("Could not read Tavily API key: {e}"));
+            None
+        }
+    };
+    let keys = ExtractionBackendKeys { firecrawl_key: firecrawl_key.clone(), tavily_key: tavily_key.clone() };
+
+    // Fail early only if both keys are missing
+    if keys.firecrawl_key.is_none() && keys.tavily_key.is_none() {
+        return Err("Import Links needs a Firecrawl or Tavily API key. Add firecrawlApiKey or tavilyApiKey to settings.".into());
+    }
+
+    if keys.tavily_key.is_none() {
+        emit_event(&on_event, &run_id, "debug", "Tavily API key not found \u{2014} no Tavily fallback available for Import Links");
+    }
+    if keys.firecrawl_key.is_none() {
+        emit_event(&on_event, &run_id, "debug", "Firecrawl API key not found \u{2014} using Tavily-only mode for Import Links");
+    }
 
     thread::spawn(move || {
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let import_started_at = Instant::now();
+            emit_event(&on_event, &run_id, "debug", format!("Timing import start at {}: {} URLs", import_timing_label(), total));
             emit_event(&on_event, &run_id, "started", format!("Starting import: {} URLs", total));
             if let Err(e) = fs::create_dir_all(&folder_path) {
                 emit_event(&on_event, &run_id, "failed", format!("Could not create import folder: {e}"));
@@ -1755,123 +1509,72 @@ fn import_job_links(input: ImportJobLinksInput, on_event: Channel<AgentRunEvent>
             let mut extracted_count = 0usize;
             let mut written_count = 0usize;
 
-            if total_valid == 1 {
-                // Single URL: use Firecrawl /v2/scrape
-                let (original_url, extract_url) = &url_mappings[0];
-                emit_event(&on_event, &run_id, "debug", "Using Firecrawl single scrape");
-                emit_event_payload(&on_event, &run_id, "status", format!("Extracting: {}", extract_url.chars().take(80).collect::<String>()),
-                    serde_json::json!({"index": 1, "total": 1, "url": extract_url, "originalUrl": original_url}));
+            let debug_mode = match (keys.firecrawl_key.is_some(), keys.tavily_key.is_some()) {
+                (true, true) => format!("Using Firecrawl single scrape with Tavily fallback: {} URLs", total_valid),
+                (true, false) => format!("Using Firecrawl single scrape: {} URLs", total_valid),
+                (false, true) => format!("Using Tavily single scrape: {} URLs", total_valid),
+                (false, false) => "No extraction backend available".to_string(),
+            };
+            emit_event(&on_event, &run_id, "debug", debug_mode);
 
-                match firecrawl_scrape_url(&firecrawl_key, extract_url, &on_event, &run_id) {
-                    Ok(page) => {
-                        extracted_count += 1;
-                        if let Some(err) = &page.error {
-                            emit_event(&on_event, &run_id, "debug", format!("Firecrawl failed to extract {extract_url}: {err}"));
-                            failures.push(ImportLinkFailure { url: original_url.clone(), error: err.clone() });
-                            files.push(ImportLinkFile { url: original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(err.clone()) });
-                        } else {
-                            let final_url = page.final_url.as_deref().unwrap_or(&page.extract_url);
-                            let job = parse_imported_job(original_url, final_url, page.title.as_deref(), &page.content);
-                            let title = job.title.clone();
-                            let file_name = import_link_file_name(1, final_url);
-                            let file_rel = format!("{import_base}/{file_name}");
-                            let file_path = match safe_project_path(&input.project_slug, &file_rel) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    emit_event(&on_event, &run_id, "debug", format!("Could not resolve file path: {e}"));
-                                    files.push(ImportLinkFile { url: original_url.clone(), title, file_path: None, extracted: true, error: Some(format!("File write error: {e}")) });
-                                    return;
-                                }
-                            };
-                            let md = import_link_markdown(original_url, final_url, &job);
-                            if let Err(e) = fs::write(&file_path, md) {
-                                emit_event(&on_event, &run_id, "debug", format!("Write failed: {e}"));
-                                files.push(ImportLinkFile { url: original_url.clone(), title, file_path: None, extracted: true, error: Some(e.to_string()) });
-                            } else {
-                                written_count += 1;
-                                emit_event(&on_event, &run_id, "debug", format!("Wrote {file_rel}"));
-                                files.push(ImportLinkFile { url: original_url.clone(), title, file_path: Some(file_rel), extracted: true, error: None });
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        emit_event(&on_event, &run_id, "debug", format!("Firecrawl scrape error for {extract_url}: {e}"));
-                        let err_str = e.to_string();
-                        failures.push(ImportLinkFailure { url: original_url.clone(), error: err_str.clone() });
-                        files.push(ImportLinkFile { url: original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(format!("Extraction error: {err_str}")) });
-                    }
+            const IMPORT_LINKS_CONCURRENCY: usize = 10;
+            const FIRECRAWL_CONCURRENCY: usize = 2;
+            emit_event(&on_event, &run_id, "debug", format!("Using Import Links worker pool concurrency={IMPORT_LINKS_CONCURRENCY}; Firecrawl concurrency={FIRECRAWL_CONCURRENCY}; Tavily-first routing"));
+            let work_queue: VecDeque<(usize, String, String)> = url_mappings
+                .iter()
+                .enumerate()
+                .map(|(idx, (original_url, extract_url))| (idx + 1, original_url.clone(), extract_url.clone()))
+                .collect();
+            let work_queue = Arc::new(Mutex::new(work_queue));
+            let firecrawl_limiter: FirecrawlLimiter = Arc::new((Mutex::new(FIRECRAWL_CONCURRENCY), Condvar::new()));
+            let (result_tx, result_rx) = mpsc::channel::<(usize, String, String, ImportedExtractPage)>();
+            let worker_count = std::cmp::min(IMPORT_LINKS_CONCURRENCY, total_valid);
+            let mut worker_handles = Vec::new();
+
+            for worker_id in 0..worker_count {
+                let queue_for_thread = Arc::clone(&work_queue);
+                let tx_for_thread = result_tx.clone();
+                let keys_for_thread = keys.clone();
+                let event_for_thread = on_event.clone();
+                let run_id_for_thread = run_id.clone();
+                let firecrawl_limiter_for_thread = Arc::clone(&firecrawl_limiter);
+                worker_handles.push(thread::spawn(move || loop {
+                    let next_work = {
+                        let mut queue = queue_for_thread.lock().unwrap();
+                        queue.pop_front()
+                    };
+                    let Some((index, original_for_thread, extract_for_thread)) = next_work else { break; };
+
+                    emit_event_payload(&event_for_thread, &run_id_for_thread, "status", format!("Extracting ({}/{}): {}", index, total_valid, extract_for_thread.chars().take(80).collect::<String>()),
+                        serde_json::json!({"index": index, "total": total_valid, "url": extract_for_thread, "originalUrl": original_for_thread, "worker": worker_id + 1}));
+                    let url_started_at = Instant::now();
+                    emit_event(&event_for_thread, &run_id_for_thread, "debug", format!("Timing URL {index} start at {} on worker {}: {extract_for_thread}", import_timing_label(), worker_id + 1));
+                    let page = extract_import_page_with_fallback(&keys_for_thread, &original_for_thread, &extract_for_thread, &event_for_thread, &run_id_for_thread, "single URL extraction", &firecrawl_limiter_for_thread);
+                    emit_event(&event_for_thread, &run_id_for_thread, "debug", format!("Timing URL {index} finished in {}ms on worker {}: {extract_for_thread}", import_timing_ms(url_started_at), worker_id + 1));
+                    let _ = tx_for_thread.send((index, original_for_thread, extract_for_thread, page));
+                }));
+            }
+            drop(result_tx);
+
+            let mut extract_results = Vec::new();
+            for result in result_rx {
+                extract_results.push(result);
+            }
+            for handle in worker_handles {
+                if handle.join().is_err() {
+                    emit_event(&on_event, &run_id, "debug", "Import extraction worker panicked");
                 }
-            } else {
-                // Multi-URL: use Firecrawl /v2/batch/scrape in chunks of 10
-                emit_event(&on_event, &run_id, "debug", format!("Using Firecrawl batch scrape: {} URLs", total_valid));
-                let num_chunks = (total_valid + 9) / 10;
-                for chunk_idx in 0..num_chunks {
-                    let chunk_start = chunk_idx * 10;
-                    let chunk_end = std::cmp::min(chunk_start + 10, total_valid);
-                    if chunk_start >= chunk_end { break; }
+            }
+            extract_results.sort_by_key(|(index, _, _, _)| *index);
 
-                    let chunk_urls: Vec<String> = url_mappings[chunk_start..chunk_end].iter().map(|(_, c)| c.clone()).collect();
-                    let chunk_mappings: Vec<(String, String)> = url_mappings[chunk_start..chunk_end].to_vec();
-
-                    emit_event(&on_event, &run_id, "debug", format!("Batch chunk {}/{}: {} URLs", chunk_idx + 1, num_chunks, chunk_urls.len()));
-
-                    let batch_id = match firecrawl_start_batch_scrape(&firecrawl_key, &chunk_urls, &on_event, &run_id) {
-                        Ok(id) => id,
-                        Err(e) => {
-                            emit_event(&on_event, &run_id, "debug", format!("Firecrawl batch start error: {e}"));
-                            for (original_url, _) in &chunk_mappings {
-                                failures.push(ImportLinkFailure { url: original_url.clone(), error: format!("Batch start error: {e}") });
-                                files.push(ImportLinkFile { url: original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(format!("Batch error: {e}")) });
-                            }
-                            continue;
-                        }
-                    };
-
-                    emit_event(&on_event, &run_id, "debug", format!("Firecrawl batch id: {batch_id}"));
-
-                    let batch_pages = match firecrawl_poll_batch_scrape(&firecrawl_key, &batch_id, &chunk_mappings, &on_event, &run_id) {
-                        Ok(pages) => pages,
-                        Err(e) => {
-                            emit_event(&on_event, &run_id, "debug", format!("Firecrawl batch poll error: {e}"));
-                            for (original_url, _) in &chunk_mappings {
-                                failures.push(ImportLinkFailure { url: original_url.clone(), error: format!("Batch poll error: {e}") });
-                                files.push(ImportLinkFile { url: original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(format!("Batch error: {e}")) });
-                            }
-                            continue;
-                        }
-                    };
-
-                    for page in &batch_pages {
-                        extracted_count += 1;
-                        if let Some(err) = &page.error {
-                            emit_event(&on_event, &run_id, "debug", format!("Firecrawl batch failed for {}: {err}", page.extract_url));
-                            failures.push(ImportLinkFailure { url: page.original_url.clone(), error: err.clone() });
-                            files.push(ImportLinkFile { url: page.original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(err.clone()) });
-                        } else {
-                            let final_url = page.final_url.as_deref().unwrap_or(&page.extract_url);
-                            let job = parse_imported_job(&page.original_url, final_url, page.title.as_deref(), &page.content);
-                            let title = job.title.clone();
-                            let file_name = import_link_file_name(extracted_count, final_url);
-                            let file_rel = format!("{import_base}/{file_name}");
-                            let file_path = match safe_project_path(&input.project_slug, &file_rel) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    emit_event(&on_event, &run_id, "debug", format!("Could not resolve file path: {e}"));
-                                    files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: None, extracted: true, error: Some(format!("File write error: {e}")) });
-                                    continue;
-                                }
-                            };
-                            let md = import_link_markdown(&page.original_url, final_url, &job);
-                            if let Err(e) = fs::write(&file_path, md) {
-                                emit_event(&on_event, &run_id, "debug", format!("Write failed: {e}"));
-                                files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: None, extracted: true, error: Some(e.to_string()) });
-                            } else {
-                                written_count += 1;
-                                emit_event(&on_event, &run_id, "debug", format!("Wrote {file_rel}"));
-                                files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: Some(file_rel), extracted: true, error: None });
-                            }
-                        }
-                    }
+            for (index, original_url, extract_url, page) in extract_results {
+                extracted_count += 1;
+                if let Some(err) = &page.error {
+                    emit_event(&on_event, &run_id, "debug", format!("Failed to extract {extract_url}: {err}"));
+                    failures.push(ImportLinkFailure { url: original_url, error: err.clone() });
+                    files.push(ImportLinkFile { url: page.original_url.clone(), title: String::new(), file_path: None, extracted: false, error: Some(err.clone()) });
+                } else {
+                    write_imported_extract_page(&input.project_slug, &import_base, index, &page, &mut files, &mut written_count, &on_event, &run_id);
                 }
             }
 
@@ -1885,6 +1588,7 @@ fn import_job_links(input: ImportJobLinksInput, on_event: Channel<AgentRunEvent>
                 failures,
             };
             let summary_text = format!("Import complete: {written_count} written, {} failed out of {total}", summary.failed);
+            emit_event(&on_event, &run_id, "debug", format!("Timing import finished in {}ms: written={}, failed={}", import_timing_ms(import_started_at), written_count, summary.failed));
             emit_event_payload(&on_event, &run_id, "completed", summary_text,
                 serde_json::to_value(&summary).unwrap_or_default());
         }));
@@ -1941,45 +1645,71 @@ fn start_hunt_apify(mut input: RunHuntApifyInput, on_event: Channel<AgentRunEven
             HuntResultDB { runs: vec![], jobs: HashMap::new() }
         };
         let before_count = result_db.jobs.len();
-        // Run actors with per-site effective settings
-        let mut all = Vec::<(String, Value)>::new();
+        // Run selected actors concurrently. Apify Free allows 25 concurrent runs; the UI caps selected sites well below that.
+        let mut actor_handles = Vec::new();
         let mut failures = Vec::<String>::new();
         for site in &input.hunt.selected_sites {
             let actor = actor_slug_for_site(site);
             if actor == "unknown" { failures.push(format!("{site}: unknown actor")); continue; }
-            // Compute per-site API-effective settings; post-filter still uses run-level effective settings.
+
+            let site_for_thread = site.clone();
+            let actor_for_thread = actor.to_string();
             let api_hunt = effective_hunt_for_site_for_api(&effective, site);
-            let mut api_fields = Vec::<&str>::new();
-            let mut post_filter_fields = Vec::<&str>::new();
-            let mut unsupported_fields = Vec::<&str>::new();
-            for f in &["roles","includeKeywords","postedWithin","location"] {
-                match actor_field_capability(site, f) {
-                    ActorFieldCapability::Api => api_fields.push(f),
-                    ActorFieldCapability::PostFilter => post_filter_fields.push(f),
-                    ActorFieldCapability::Unsupported => unsupported_fields.push(f),
+            let effective_for_thread = effective.clone();
+            let token_for_thread = token.clone();
+            let run_id_for_thread = run_id.clone();
+            let event_for_thread = on_event.clone();
+
+            actor_handles.push(thread::spawn(move || {
+                let mut api_fields = Vec::<&str>::new();
+                let mut post_filter_fields = Vec::<&str>::new();
+                let mut unsupported_fields = Vec::<&str>::new();
+                for f in &["roles","includeKeywords","postedWithin","location"] {
+                    match actor_field_capability(&site_for_thread, f) {
+                        ActorFieldCapability::Api => api_fields.push(f),
+                        ActorFieldCapability::PostFilter => post_filter_fields.push(f),
+                        ActorFieldCapability::Unsupported => unsupported_fields.push(f),
+                    }
                 }
-            }
-            let debug_payload = serde_json::json!({
-                "site": site,
-                "actorSlug": actor,
-                "apiEffectiveFields": {
-                    "roles": api_hunt.roles,
-                    "includeKeywords": api_hunt.include_keywords,
-                    "postedWithin": api_hunt.posted_within,
-                    "location": api_hunt.location,
-                    "workMode": api_hunt.work_mode
-                },
-                "postFilterEffectiveFields": {
-                    "includeKeywords": effective.include_keywords
-                },
-                "apiFields": api_fields,
-                "postFilterFields": post_filter_fields,
-                "ignoredFields": unsupported_fields
-            });
-            emit_event_payload(&on_event, &run_id, "debug", format!("{site}: capability-adjusted fields"), debug_payload);
-            match run_actor_api(site, actor, &api_hunt, &token, &run_id, &on_event) {
-                Ok(items) => { emit_event(&on_event, &run_id, "status", format!("{site}: fetched {} items", items.len())); for item in items { all.push((site.clone(), item)); } }
-                Err(e) => { emit_event(&on_event, &run_id, "status", format!("{site} failed: {e}")); failures.push(format!("{site}: {e}")); }
+                let debug_payload = serde_json::json!({
+                    "site": site_for_thread,
+                    "actorSlug": actor_for_thread,
+                    "apiEffectiveFields": {
+                        "roles": api_hunt.roles,
+                        "includeKeywords": api_hunt.include_keywords,
+                        "postedWithin": api_hunt.posted_within,
+                        "location": api_hunt.location,
+                        "workMode": api_hunt.work_mode
+                    },
+                    "postFilterEffectiveFields": {
+                        "includeKeywords": effective_for_thread.include_keywords
+                    },
+                    "apiFields": api_fields,
+                    "postFilterFields": post_filter_fields,
+                    "ignoredFields": unsupported_fields
+                });
+                emit_event_payload(&event_for_thread, &run_id_for_thread, "debug", format!("{}: capability-adjusted fields", site_for_thread), debug_payload);
+                match run_actor_api(&site_for_thread, &actor_for_thread, &api_hunt, &token_for_thread, &run_id_for_thread, &event_for_thread) {
+                    Ok(items) => {
+                        emit_event(&event_for_thread, &run_id_for_thread, "status", format!("{}: fetched {} items", site_for_thread, items.len()));
+                        Ok((site_for_thread, items))
+                    }
+                    Err(e) => {
+                        emit_event(&event_for_thread, &run_id_for_thread, "status", format!("{} failed: {e}", site_for_thread));
+                        Err(format!("{}: {e}", site_for_thread))
+                    }
+                }
+            }));
+        }
+
+        let mut all = Vec::<(String, Value)>::new();
+        for handle in actor_handles {
+            match handle.join() {
+                Ok(Ok((site, items))) => {
+                    for item in items { all.push((site.clone(), item)); }
+                }
+                Ok(Err(e)) => failures.push(e),
+                Err(_) => failures.push("actor worker panicked".to_string()),
             }
         }
         let raw_found = all.len();
@@ -2724,7 +2454,7 @@ fn tavily_extract_urls(urls: &[String]) -> Result<TavilyExtractOutput, String> {
         "urls": urls,
         "extract_depth": "advanced",
         "include_images": false,
-        "format": "text"
+        "format": "markdown"
     });
     let result = execute_tavily_extract(&key, &body);
     let result = match result {
@@ -2797,6 +2527,218 @@ fn execute_tavily_extract(key: &str, body: &Value) -> Result<TavilyExtractOutput
         return Err("Tavily Extract response schema not recognized — expected results[] and/or failed_results[]".into());
     }
     Ok(TavilyExtractOutput { results, failed_results })
+}
+
+/// Wrap Tavily extract for a single URL, returning an ImportedExtractPage.
+fn tavily_extract_page(url: &str) -> Result<ImportedExtractPage, String> {
+    let result = tavily_extract_urls(&[url.to_string()])?;
+    // Take first successful result
+    if let Some(r) = result.results.into_iter().next() {
+        let content = r.raw_content.as_deref()
+            .or(r.content.as_deref())
+            .or(r.text.as_deref())
+            .unwrap_or("")
+            .to_string();
+        Ok(ImportedExtractPage {
+            original_url: url.to_string(),
+            extract_url: r.url.clone(),
+            final_url: Some(r.url),
+            title: r.title,
+            content,
+            error: None,
+            provider: "Tavily".to_string(),
+        })
+    } else if let Some(fail) = result.failed_results.into_iter().next() {
+        Ok(ImportedExtractPage {
+            original_url: url.to_string(),
+            extract_url: url.to_string(),
+            final_url: None,
+            title: None,
+            content: String::new(),
+            error: Some(fail.error),
+            provider: "Tavily".to_string(),
+        })
+    } else {
+        Ok(ImportedExtractPage {
+            original_url: url.to_string(),
+            extract_url: url.to_string(),
+            final_url: None,
+            title: None,
+            content: String::new(),
+            error: Some("Tavily returned no results".to_string()),
+            provider: "Tavily".to_string(),
+        })
+    }
+}
+
+/// Try Firecrawl first, falling back to Tavily for a single URL.
+fn extract_import_page_with_fallback(
+    keys: &ExtractionBackendKeys,
+    original_url: &str,
+    extract_url: &str,
+    on_event: &Channel<AgentRunEvent>,
+    run_id: &str,
+    reason: &str,
+    firecrawl_limiter: &FirecrawlLimiter,
+) -> ImportedExtractPage {
+    let try_tavily = |label: &str| -> Result<ImportedExtractPage, String> {
+        let tavily_started_at = Instant::now();
+        emit_event(on_event, run_id, "debug", format!("Timing Tavily start at {} ({label}): {extract_url}", import_timing_label()));
+        match tavily_extract_page(extract_url) {
+            Ok(page) => {
+                if page.error.is_none() && !page.content.is_empty() {
+                    emit_event(on_event, run_id, "debug", format!("Timing Tavily finished in {}ms ({label}): {extract_url}", import_timing_ms(tavily_started_at)));
+                    let mut p = page;
+                    p.original_url = original_url.to_string();
+                    Ok(p)
+                } else {
+                    let err = page.error.clone().unwrap_or_else(|| "empty content".to_string());
+                    emit_event(on_event, run_id, "debug", format!("Timing Tavily failed in {}ms ({label}): {extract_url}", import_timing_ms(tavily_started_at)));
+                    Err(err)
+                }
+            }
+            Err(e) => {
+                emit_event(on_event, run_id, "debug", format!("Timing Tavily errored in {}ms ({label}): {extract_url}", import_timing_ms(tavily_started_at)));
+                Err(e)
+            }
+        }
+    };
+
+    let try_firecrawl = |label: &str| -> Result<ImportedExtractPage, String> {
+        if let Some(skip_reason) = firecrawl_unsupported_import_url(extract_url) {
+            emit_event(on_event, run_id, "debug", format!("Skipping Firecrawl for {extract_url}: {skip_reason}; routing to Tavily"));
+            return Err(skip_reason.to_string());
+        }
+        let Some(fc_key) = &keys.firecrawl_key else {
+            emit_event(on_event, run_id, "debug", format!("No Firecrawl key available for {extract_url} ({label})"));
+            return Err("No Firecrawl key".to_string());
+        };
+        acquire_firecrawl_slot(firecrawl_limiter);
+        let firecrawl_started_at = Instant::now();
+        emit_event(on_event, run_id, "debug", format!("Timing Firecrawl start at {} ({label}): {extract_url}", import_timing_label()));
+        let result = match firecrawl_scrape_url(fc_key, extract_url, on_event, run_id) {
+            Ok(page) => {
+                if page.error.is_none() && !page.content.is_empty() {
+                    emit_event(on_event, run_id, "debug", format!("Timing Firecrawl finished in {}ms ({label}): {extract_url}", import_timing_ms(firecrawl_started_at)));
+                    let mut p = page;
+                    p.original_url = original_url.to_string();
+                    p.extract_url = extract_url.to_string();
+                    Ok(p)
+                } else {
+                    let err = page.error.clone().unwrap_or_else(|| "empty content".to_string());
+                    emit_event(on_event, run_id, "debug", format!("Timing Firecrawl failed in {}ms ({label}): {extract_url}", import_timing_ms(firecrawl_started_at)));
+                    Err(err)
+                }
+            }
+            Err(e) => {
+                emit_event(on_event, run_id, "debug", format!("Timing Firecrawl errored in {}ms ({label}): {extract_url}", import_timing_ms(firecrawl_started_at)));
+                Err(e)
+            }
+        };
+        release_firecrawl_slot(firecrawl_limiter);
+        result
+    };
+
+    let tavily_first = tavily_unsupported_import_url(extract_url).is_none();
+    if tavily_first {
+        if keys.tavily_key.is_some() {
+            match try_tavily("primary") {
+                Ok(page) => {
+                    emit_event(on_event, run_id, "debug", format!("Tavily primary OK for {extract_url}"));
+                    return page;
+                }
+                Err(e) => emit_event(on_event, run_id, "debug", format!("Tavily primary failed for {extract_url}; trying Firecrawl fallback ({reason}): {e}")),
+            }
+        } else {
+            emit_event(on_event, run_id, "debug", format!("No Tavily key; trying Firecrawl directly for {extract_url}"));
+        }
+        match try_firecrawl("fallback") {
+            Ok(page) => return page,
+            Err(fc_err) => {
+                return ImportedExtractPage {
+                    original_url: original_url.to_string(),
+                    extract_url: extract_url.to_string(),
+                    final_url: None,
+                    title: None,
+                    content: String::new(),
+                    error: Some(format!("Unsupported site or extraction failed with both Tavily and Firecrawl. Firecrawl: {fc_err}")),
+                    provider: "".to_string(),
+                };
+            }
+        }
+    }
+
+    if let Some(skip_reason) = tavily_unsupported_import_url(extract_url) {
+        emit_event(on_event, run_id, "debug", format!("Skipping Tavily primary for {extract_url}: {skip_reason}; routing to Firecrawl first"));
+    }
+    match try_firecrawl("primary") {
+        Ok(page) => page,
+        Err(fc_err) => {
+            if keys.tavily_key.is_some() {
+                emit_event(on_event, run_id, "debug", format!("Firecrawl primary failed for {extract_url}; trying Tavily fallback ({reason}): {fc_err}"));
+                match try_tavily("fallback") {
+                    Ok(page) => page,
+                    Err(tv_err) => ImportedExtractPage {
+                        original_url: original_url.to_string(),
+                        extract_url: extract_url.to_string(),
+                        final_url: None,
+                        title: None,
+                        content: String::new(),
+                        error: Some(format!("Unsupported site or extraction failed with both Firecrawl and Tavily. Firecrawl: {fc_err}; Tavily: {tv_err}")),
+                        provider: "".to_string(),
+                    },
+                }
+            } else {
+                ImportedExtractPage {
+                    original_url: original_url.to_string(),
+                    extract_url: extract_url.to_string(),
+                    final_url: None,
+                    title: None,
+                    content: String::new(),
+                    error: Some(format!("Firecrawl extraction failed: {fc_err}")),
+                    provider: "".to_string(),
+                }
+            }
+        }
+    }
+}
+
+/// Write an extracted page to disk and update tracking collections.
+fn write_imported_extract_page(
+    project_slug: &str,
+    import_base: &str,
+    index: usize,
+    page: &ImportedExtractPage,
+    files: &mut Vec<ImportLinkFile>,
+    written_count: &mut usize,
+    on_event: &Channel<AgentRunEvent>,
+    run_id: &str,
+) {
+    let format_started_at = Instant::now();
+    let title = page.title.as_deref().unwrap_or("Imported Page").to_string();
+    emit_event(on_event, run_id, "debug", format!("Timing format/write start at {}: index={}, title={title}, url={}", import_timing_label(), index, page.original_url));
+    let file_name = import_link_file_name(index, &title);
+    let file_rel = format!("{import_base}/{file_name}");
+    let file_path = match safe_project_path(project_slug, &file_rel) {
+        Ok(p) => p,
+        Err(e) => {
+            emit_event(on_event, run_id, "debug", format!("Timing format/write failed in {}ms: index={}, path resolve", import_timing_ms(format_started_at), index));
+            emit_event(on_event, run_id, "debug", format!("Could not resolve file path: {e}"));
+            files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: None, extracted: true, error: Some(format!("File write error: {e}")) });
+            return;
+        }
+    };
+    let md = import_link_markdown(&page.original_url, page.title.as_deref(), &page.content, &page.provider);
+    if let Err(e) = fs::write(&file_path, md) {
+        emit_event(on_event, run_id, "debug", format!("Timing format/write failed in {}ms: index={}, fs write", import_timing_ms(format_started_at), index));
+        emit_event(on_event, run_id, "debug", format!("Write failed: {e}"));
+        files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: None, extracted: true, error: Some(e.to_string()) });
+    } else {
+        *written_count += 1;
+        emit_event(on_event, run_id, "debug", format!("Timing format/write finished in {}ms: index={}, file={file_rel}", import_timing_ms(format_started_at), index));
+        emit_event(on_event, run_id, "debug", format!("Wrote {file_rel}"));
+        files.push(ImportLinkFile { url: page.original_url.clone(), title, file_path: Some(file_rel), extracted: true, error: None });
+    }
 }
 
 fn search_tavily(query: &str) -> Result<String, String> {
@@ -3260,4 +3202,63 @@ fn open_external_url(url: String) -> Result<(), String> {
 pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,read_binary_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,open_project_file,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,tavily_extract,import_job_links,list_hunt_profiles,save_hunt_config,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,rename_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,firecrawl_status,firecrawl_connect,firecrawl_disconnect,open_external_url,resume::validate_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
-mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} }
+mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} #[test] fn light_clean_strips_navigation_and_noise(){
+    let input = r#"# PhD Position
+
+* [Home](https://example.com)
+* [Jobs](https://example.com/jobs)
+
+![Image 1](https://example.com/logo.png)
+
+This site uses cookies.
+
+**Employer:** Evidencio (Enschede, the Netherlands)
+
+**PhD enrolment:** University of Twente (UT)
+
+Evidencio is recruiting a PhD candidate within the Marie Skłodowska-Curie Actions Doctoral Network. You will join an international training network and work at the intersection of health data engineering, interoperability standards, and safe deployment of AI-driven clinical decision support.
+
+**The project at Evidencio**
+
+Healthcare data are fragmented across Electronic Health Record systems and formats. This limits the safe and scalable implementation of predictive models and other AI applications in clinical workflows. In this PhD position, you will contribute to the development of a practical integration approach that enables standardised data exchange and model deployment across diverse EHR environments.
+
+**What you will do**
+
+Build prototypes and components that enable data interoperability between EHR sources and AI-enabled applications. Translate requirements from clinical and technical stakeholders into robust maintainable software and data pipelines. Contribute to validation and monitoring approaches suitable for real-world clinical use.
+
+**Your profile**
+
+A Master's degree in computer science, biomedical sciences, bio/health informatics, data science, software engineering, artificial intelligence or a related field. Strong programming skills. Experience with cloud environments.
+
+**What we offer**
+
+A PhD position that is funded for 3 years with Evidencio as employer and PhD enrolment at the University of Twente. A gross monthly salary ranging between 3059 and 3881 based on a 40-hour working week. A research environment that combines academic depth with real-world implementation in healthcare settings.
+
+##### Share this page
+
+* [Twitter](https://twitter.com)
+* [LinkedIn](https://linkedin.com)
+* [Facebook](https://facebook.com)
+
+#### Follow us
+
+* [Twitter](https://twitter.com)
+* [LinkedIn](https://linkedin.com)
+"#;
+    let cleaned = super::light_clean_import_content(input);
+    // Navigation links stripped
+    assert!(!cleaned.contains("[Home]"), "Home link should be stripped");
+    assert!(!cleaned.contains("[Jobs]"), "Jobs link should be stripped");
+    // Images stripped
+    assert!(!cleaned.contains("![Image 1]"), "Images should be stripped");
+    // Noise stripped
+    assert!(!cleaned.contains("cookies"), "Cookie notice should be stripped");
+    // Real content preserved
+    assert!(cleaned.contains("Employer:** Evidencio"), "Employer should be preserved");
+    assert!(cleaned.contains("University of Twente"), "University should be preserved");
+    assert!(cleaned.contains("Master's degree"), "Requirements should be preserved");
+    assert!(cleaned.contains("healthcare settings"), "Offer details should be preserved");
+    // Footer truncated (after 1000+ chars threshold)
+    assert!(!cleaned.contains("Share this page"), "Footer should be truncated");
+    assert!(!cleaned.contains("Follow us"), "Footer should be truncated");
+} }
