@@ -330,3 +330,8 @@ input:hover,textarea:hover,select:hover,.multi-select-trigger:hover{border-color
 
 /* Import file rows in dashboard */
 .import-file-list{margin:6px 0 0}.import-file-row{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;cursor:pointer;color:var(--text);font-size:12px}.import-file-row:hover{background:rgba(10,102,194,.12)}.import-file-row svg{color:var(--subtle);flex:none}
+
+/* Ensure @ and / autocomplete options are not styled like compose buttons */
+.chat-compose .mention-menu{background:#050505!important}
+.chat-compose .mention-menu button{background:#050505!important;background-image:none!important;box-shadow:none!important;border:0!important}
+.chat-compose .mention-menu button:hover,.chat-compose .mention-menu button.active{background:rgba(255,255,255,.05)!important;background-image:none!important}
