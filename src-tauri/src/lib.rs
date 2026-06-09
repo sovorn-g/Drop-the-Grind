@@ -162,7 +162,7 @@ pub struct AgentRunState { pub pids: Mutex<HashMap<String, u32>> }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRunInput { pub project_slug: String, pub prompt: String, pub linked_file_path: Option<String>, pub model: Option<String>, pub effort: Option<String>, pub run_id: Option<String> }
+pub struct AgentRunInput { pub project_slug: String, pub prompt: String, pub linked_file_path: Option<String>, pub model: Option<String>, pub effort: Option<String>, pub run_id: Option<String>, pub session_id: Option<String> }
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -436,6 +436,236 @@ fn safe_project_path(project_slug: &str, rel_path: &str) -> Result<PathBuf, Stri
 fn is_text_editable(path: &Path) -> bool { matches!(path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase().as_str(), "md"|"json"|"txt"|"tex"|"toml"|"yaml"|"yml") }
 fn write_if_missing(path: &Path, content: &str) -> Result<(), String> { if !path.exists() { fs::write(path, content).map_err(|e| e.to_string())?; } Ok(()) }
 
+const PROFILE_RESUME_TYP_TEMPLATE: &str = r######"// Drop the Grind — canonical reusable resume template.
+// Derived from docs/typst/resume_2.typ, but with generic placeholder content.
+//
+// Purpose:
+// - This file is the visual/layout contract for rendered resumes.
+// - The agent should read profile/.RESUME.typ for structure/style reference.
+// - The agent should still write human-editable Markdown under resume/.
+// - The app converts that Markdown into this Typst layout and renders PDF.
+//
+// Markdown output contract for /resume-builder:
+//
+// # Full Name
+//
+// **Smaller Experience, Context, Role Title**
+// LinkedIn | Portfolio | GitHub | Contact | Location
+//
+// ## Summary
+//
+// 2-3 line summary tailored to the job.
+//
+// ## Education
+//
+// ### Institution Name
+// **Degree / Program**
+// Location | Dates
+//
+// - Detail, focus, thesis, GPA, or coursework
+//
+// ## Skills
+//
+// **Category:** comma-separated skills
+// **Category:** comma-separated skills
+//
+// ## Experience
+//
+// ### Organization
+// **Role Title - Team or Focus Area**
+// Location | Dates
+//
+// - Bullet with action, method, scale, and result.
+//
+// ## Projects / Research
+//
+// ### Project or Research Title
+// **Project Type / Context**
+// Link or Location | Dates
+//
+// - Bullet with what was built, researched, or shipped.
+//
+// Optional sections may follow the same section/entry pattern:
+// ## Awards
+// ## Certifications
+// ## Selected Publications
+// ## Work Authorization
+
+#set page(paper: "us-letter", margin: (x: 0.78in, y: 0.62in))
+#set text(font: ("Avenir Next", "Inter", "Helvetica Neue"), size: 10.5pt, fill: rgb("111111"))
+#set par(leading: 0.46em, justify: false)
+#set list(indent: 0pt, body-indent: 0.64em, spacing: 0.38em)
+
+#let muted = rgb("666666")
+#let rule = rgb("888888")
+#let dark = rgb("050505")
+#let pipe = text(fill: muted)[ | ]
+
+// ── Shared helpers ─────────────────────────────────────────────
+
+#let section(title, body) = {
+  v(0.23em)
+  set par(leading: 0em)
+  text(fill: muted, size: 15pt, weight: "bold")[#title]
+  v(-1.15em)
+  line(length: 100%, stroke: 0.5pt + rule)
+  v(-0.25em)
+  set par(leading: 0.46em)
+  body
+}
+
+#let skill-row(label, value) = grid(
+  columns: (1.35in, 1fr),
+  column-gutter: 0.12in,
+  align: top,
+  text(weight: "regular", fill: rgb("222222"), size: 10pt)[#label],
+  text(size: 10pt)[#value],
+)
+
+#let entry(org, role, place: none, dates: none, body) = {
+  grid(
+    columns: (1fr, 1.6in),
+    column-gutter: 0.2in,
+    align: (left, right),
+    {
+      text(size: 13pt, weight: "bold", fill: dark)[#org]
+      linebreak()
+      role
+    },
+    {
+      if place != none { text(fill: muted)[#place] }
+      if place != none and dates != none { linebreak() }
+      if dates != none { text(fill: muted)[#dates] }
+    },
+  )
+  v(-0.55em)
+  body
+  set par(leading: 0.46em)
+  v(0.27em)
+}
+
+// ── Header ─────────────────────────────────────────────────────
+#text(size: 24pt, fill: muted, weight: "regular")[FIRST ]#text(size: 24pt, weight: "bold", fill: dark)[LAST]
+#v(0.15em)
+
+#text(size: 14pt, weight: "bold", fill: dark)[Smaller Experience, Context, Role Title]
+#v(0.15em)
+
+#link("https://linkedin.com/in/yourprofile")[#text(size: 10pt, fill: muted)[LinkedIn]]#pipe#link("https://yourportfolio.dev")[#text(size: 10pt, fill: muted)[Portfolio]]#pipe#link("https://github.com/yourhandle")[#text(size: 10pt, fill: muted)[GitHub]]#pipe#link("mailto:you@email.com")[#text(size: 10pt, fill: muted)[Contact]]#pipe#text(size: 10pt, fill: muted)[City, ST]
+
+// ── Summary ────────────────────────────────────────────────────
+#v(0.5em)
+#text(size: 10.5pt)[Applied summary paragraph tailored to the target role. State your strongest positioning, relevant technical focus, and one or two concrete achievements without inventing facts.]
+#v(0.15em)
+
+// ── Education ──────────────────────────────────────────────────
+#section("Education")[
+  #grid(
+    columns: (1fr, 1.4in),
+    column-gutter: 0.15in,
+    align: (left, right),
+    [
+      #text(size: 12pt, weight: "bold", fill: dark)[University Name]
+      #linebreak()
+      #text(weight: "bold", fill: dark)[Degree Name / Program]
+      #linebreak()
+      - Focus, thesis, concentration, GPA, honors, or notable coursework
+    ],
+    text(fill: muted)[City, ST | Start - End],
+  )
+]
+
+// ── Skills ─────────────────────────────────────────────────────
+#section("Skills")[
+  #skill-row("Languages:", [Python, JavaScript, C++, SQL, Java])
+  #v(0.35em)
+  #skill-row("AI / ML:", [LLM APIs, RAG, PyTorch, TensorFlow, scikit-learn, model evaluation])
+  #v(0.35em)
+  #skill-row("Backend / Ops:", [FastAPI, PostgreSQL, Docker, Redis, REST APIs, cloud deployment])
+  #v(0.35em)
+  #skill-row("Tools:", [Git, Linux, CI/CD, dashboards, workflow automation])
+]
+
+// ── Experience ─────────────────────────────────────────────────
+#section("Experience")[
+  #entry(
+    [Company / Lab / Institution],
+    [Role Title - Team or Focus Area],
+    place: [City, ST],
+    dates: [Start - End],
+  )[
+    - Strongest job-relevant achievement with action, method, scale, and result.
+    - Second achievement with metric, technical depth, or production impact.
+    - Third achievement showing collaboration, ownership, product judgment, or business value.
+  ]
+
+  #entry(
+    [Company / Lab / Institution],
+    [Role Title - Team or Focus Area],
+    place: [City, ST],
+    dates: [Start - End],
+  )[
+    - Achievement bullet with measurable outcome.
+    - Achievement bullet demonstrating technical skill.
+    - Achievement bullet highlighting teamwork, ownership, or iteration.
+  ]
+]
+
+// ── Projects / Research ────────────────────────────────────────
+#section("Projects / Research")[
+  #entry(
+    [Project or Research Title],
+    [Project Type / Context],
+    place: [Link or Location],
+    dates: [Start - End],
+  )[
+    - What was built, researched, or shipped.
+    - Technical methods, architecture, model, dataset, or system design.
+    - Result, metric, demo, paper, users, deployment, or measurable impact.
+  ]
+
+  #entry(
+    [Project or Research Title],
+    [Project Type / Context],
+    place: [Link or Location],
+    dates: [Start - End],
+  )[
+    - Achievement bullet.
+    - Achievement bullet.
+  ]
+]
+
+// ── Optional: Awards ───────────────────────────────────────────
+#section("Awards")[
+  #grid(
+    columns: (1fr, 1.6in),
+    column-gutter: 0.2in,
+    align: (left, right),
+    [
+      #text(weight: "bold", fill: dark)[Award Name]
+      #linebreak()
+      Brief context or reason
+    ],
+    text(fill: muted)[Granting Organization, Year],
+  )
+]
+
+// ── Optional: Certifications ───────────────────────────────────
+#section("Certifications")[
+  #grid(
+    columns: (1fr, 1.6in),
+    column-gutter: 0.2in,
+    align: (left, right),
+    [
+      #text(weight: "bold", fill: dark)[Certification Name]
+      #linebreak()
+      Issuer
+    ],
+    text(fill: muted)[Year],
+  )
+]
+"######;
+
 #[tauri::command]
 fn create_project(name: String) -> Result<Project, String> {
     let slug=slugify(&name); if slug.is_empty(){return Err("Project name must include letters or numbers".into())}
@@ -443,12 +673,17 @@ fn create_project(name: String) -> Result<Project, String> {
     let created_at=now(); let project=Project{id:uuid::Uuid::new_v4().to_string(),name,slug:slug.clone(),root_path:root.to_string_lossy().to_string(),created_at:created_at.clone()};
     write_if_missing(&root.join("project.json"), &serde_json::to_string_pretty(&serde_json::json!({"id":project.id,"name":project.name,"slug":project.slug,"schemaVersion":3,"createdAt":created_at,"workspace":"minimal","generatedFolders":"created on demand"})).unwrap())?;
     let profile_root=root.join("profile"); fs::create_dir_all(&profile_root).map_err(|e| e.to_string())?;
+    fs::create_dir_all(root.join("resume")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(root.join("pdf")).map_err(|e| e.to_string())?;
     write_if_missing(&root.join(".AGENTS.md"), &[
-        "# Drop the Grind Agent Context","","This is an internal instruction file for the Drop the Grind agent.","It is hidden from the app file tree and loaded automatically for every agent run.","","---","","## Workspace Structure","","This project is a local Drop the Grind job-search workspace.","The stable top-level workspace paths are:","","- `profile/` — user profile and resume source files.","- `hunt_run/` — generated hunt runs from Start Hunting. Created when the first hunt runs.","- `import-links/` — extracted job postings from pasted links. Created when the first link import runs.","- `resume/` — tailored resume outputs. Created when the agent generates tailored resumes.","","Do not rename these top-level folders. Many app and agent workflows depend on these exact paths.","","---","","## Profile Files","","Use these files as user-provided context when relevant:","","- `profile/RESUME.md` — the user's base resume source. Contains all real experience, skills, and style.","- `profile/RESUME_TEMPLATE.md` — resume structure and formatting reference.","- `profile/USER.md` — user goals, constraints, preferences, and personal notes.","","Do not assume personal details, target roles, industries, or preferences unless they appear in these files or the user states them directly.","","---","","## Hunt and Import Outputs","","Hunt runs are stored under `hunt_run/<hunt-slug>/`.","Imported job links are stored under `import-links/<import-slug>/`.","","Keep user-facing artifacts in readable Markdown.","Do not dump raw API JSON into user-facing files.","When working with a specific job, prefer focused per-job files over broad mixed outputs.","","---","","## Tailored Resume Outputs","","All tailored resumes go under the `resume/` folder, mirroring the source path:","","- Single file: `resume/<source-path-with-parent-prefix>.md`","  - Example: `hunt_run/yc-1/jobs-2026-06-06/001-full-stack-engineer.md`","    → `resume/hunt_run/yc-1-001-full-stack-engineer.md`","  - Example: `import-links/mixed-92/001-viewjob.md`","    → `resume/import-links/mixed-92-001-viewjob.md`","","- Batch folder: `resume/<source-folder>/*.md`","  - Example: folder `hunt_run/yc-1/jobs-2026-06-06/`","    → `resume/hunt_run/yc-1/jobs-2026-06-06/001-full-stack-engineer.md`, etc.","  - Example: folder `import-links/mixed-92/`","    → `resume/import-links/mixed-92/001-viewjob.md`, etc.","","---","","## Agent Behavior","","- Be concise, concrete, and workspace-aware.","- Use mentioned `@path` files as important context.","- Prefer truthful tailoring and organization over generic advice.","- Do not invent user experience, credentials, employers, dates, or application facts.","- Ask before broad changes across many files.","- Do not auto-apply to jobs or submit anything externally unless the user explicitly asks.",""].join("\n"))?;
-    write_if_missing(&profile_root.join("RESUME_TEMPLATE.md"), &[
-        "# [FULL NAME]","","**[Target Role / Positioning Line]***","[LinkedIn] | [Portfolio] | [GitHub] | [Email] | [Phone] | [Location]","","---","","## Summary","","[2-3 lines. State candidate identity, years or level, strongest technical focus, and 1-2 concrete achievements. Tailor this to the target job description.]","","---","","## Skills","","**Languages:** [Python], [JavaScript], [C++], [SQL], [Java]","**ML / Data:** [PyTorch], [TensorFlow], [scikit-learn], [Pandas], [NumPy]","**Cloud / Infrastructure:** [AWS], [Docker], [Kubernetes], [Linux], [CI/CD]","**Tools / Frameworks:** [Git], [FastAPI], [Node.js], [Spark], [PostgreSQL]","","---","","## Experience","","### [Company / Lab / Institution]","**[Role Title] - [Team or Focus Area]***","[Location] | [Start Date] - [End Date]","","- [Strongest job-relevant achievement with action, method, scale, and result.]","- [Second achievement with metric, technical depth, or production impact.]","- [Third achievement showing collaboration, ownership, or business/research value.]","","### [Company / Lab / Institution]","**[Role Title] - [Team or Focus Area]***","[Location] | [Start Date] - [End Date]","","- [Achievement bullet.]","- [Achievement bullet.]","- [Achievement bullet.]","","---","","## Projects / Research","","### [Project or Research Title]","**[Project Type / Context]***","[Link if available] | [Start Date] - [End Date]","","- [What was built, researched, or shipped.]","- [Technical methods, architecture, model, dataset, or system design.]","- [Result, metric, demo, paper, users, deployment, or measurable impact.]","","### [Project or Research Title]","**[Project Type / Context]***","[Link if available] | [Start Date] - [End Date]","","- [Achievement bullet.]","- [Achievement bullet.]","","---","","## Education","","### [University Name]","**[Degree Name]***","[Location] | [Start Date] - [End Date]","","- [Relevant focus, thesis, concentration, GPA if strong, or notable coursework.]","","---","","## Optional Sections","","Use only sections that add value for the target role.","","### Selected Publications","","- [Author list]. \"[Paper Title].\" *[Venue]*, [Year]. [Status if not published.]","","### Awards","","- **[Award Name]**, [Granting Organization], [Year]. [Brief context.]","","### Teaching / Mentorship","","- [Teaching assistant, mentor, workshop, student supervision, or training impact.]","","### Certifications","","- [Certification Name], [Issuer], [Year].","","### Work Authorization","","- [Authorized to work in X / Sponsorship status if relevant and desired.]",""].join("\n"))?;
+        "# Drop the Grind Agent Context","","This is an internal instruction file for the Drop the Grind agent.","It is hidden from the app file tree and loaded automatically for every agent run.","","---","","## Workspace Structure","","This project is a local Drop the Grind job-search workspace.","The stable top-level workspace paths are:","","- `profile/` — user profile and resume source files.","- `hunt_run/` — generated hunt runs from Start Hunting. Created when the first hunt runs.","- `import-links/` — extracted job postings from pasted links. Created when the first link import runs.","- `resume/` — tailored resume outputs. The agent writes Markdown here; the app renders PDFs to `pdf/`.
+- `pdf/` — rendered PDF outputs. Generated by right-clicking a resume file/folder and choosing \"Render to PDF\".","","Do not rename these top-level folders. Many app and agent workflows depend on these exact paths.","","---","","## Profile Files","","Use these files as user-provided context when relevant:","","- `profile/RESUME.md` — the user's editable base resume source. It may contain richer notes, extra details, and all real experience/facts.","- `profile/RESUME_TEMPLATE.md` — polished Markdown example and target structure/style for tailored resume outputs.","- `profile/USER.md` — user goals, constraints, preferences, and personal notes.
+- `profile/.RESUME.typ` — hidden Typst style reference kept for future layout work. The app currently renders PDFs through a matching built-in Rust/Typst renderer. Do not edit this file.","","Do not assume personal details, target roles, industries, or preferences unless they appear in these files or the user states them directly.","","---","","## Hunt and Import Outputs","","Hunt runs are stored under `hunt_run/<hunt-slug>/`.","Imported job links are stored under `import-links/<import-slug>/`.","","Keep user-facing artifacts in readable Markdown.","Do not dump raw API JSON into user-facing files.","When working with a specific job, prefer focused per-job files over broad mixed outputs.","","---","","## Tailored Resume Outputs","","All tailored resumes go under the `resume/` folder, mirroring the source path:","","- Single file: `resume/<source-path-with-parent-prefix>.md`","  - Example: `hunt_run/yc-1/jobs-2026-06-06/001-full-stack-engineer.md`","    → `resume/hunt_run/yc-1-001-full-stack-engineer.md`","  - Example: `import-links/mixed-92/001-viewjob.md`","    → `resume/import-links/mixed-92-001-viewjob.md`","","- Batch folder: `resume/<source-folder>/*.md`","  - Example: folder `hunt_run/yc-1/jobs-2026-06-06/`","    → `resume/hunt_run/yc-1/jobs-2026-06-06/001-full-stack-engineer.md`, etc.","  - Example: folder `import-links/mixed-92/`","    → `resume/import-links/mixed-92/001-viewjob.md`, etc.","","---","","## PDF Rendering","","The app owns PDF rendering. The agent does not render PDFs.","After writing or updating tailored resumes under `resume/`, tell the user to right-click the resume file or folder and choose \"Render to PDF\" from the context menu.","Generated PDFs appear under `pdf/` using this naming:","- Single file: `pdf/<file-stem>-<YYMMDD-HHMMSS>.pdf`","- Folder: `pdf/<folder-name>/<file-stem>.pdf`","","---","","## Agent Behavior","","- Be concise, concrete, and workspace-aware.","- Use mentioned `@path` files as important context.","- Prefer truthful tailoring and organization over generic advice.","- Do not invent user experience, credentials, employers, dates, or application facts.","- Ask before broad changes across many files.","- Do not auto-apply to jobs or submit anything externally unless the user explicitly asks.","- If the user asks you to render a PDF, write/update the Markdown under `resume/` and instruct them to right-click the file/folder and choose \"Render to PDF\".",""].join("\n"))?;
     write_if_missing(&profile_root.join("RESUME.md"), &[
-        "# Mitchell Bucklew","","**Software Engineer | AI Researcher | 4x Intern, 3x Teaching Assistant**","https://www.linkedin.com/in/mitchell-bucklew | https://mitchellbucklew.dev | https://github.com/mitchellbucklew | mitchell@example.com | Phoenix, AZ","","---","","## Summary","","Software engineer and AI researcher with internship experience across machine learning platforms, data services, and production software teams. Built scalable ML and data-processing systems using Python, Spark, AWS, and cloud deployment workflows, with teaching experience supporting 500+ students in data structures and AI coursework.","","---","","## Skills","","**Languages:** Python, JavaScript, C, C++, Java, C#, SQL, PHP, HTML, CSS","**ML / Data:** Pandas, NumPy, scikit-learn, TensorFlow, PyTorch, Spark, neural networks","**Cloud / Infrastructure:** AWS, EC2, EMR, ECS, Athena, Lambda, Docker, Linux","**Tools / Frameworks:** Node.js, Git, Bash, Jupyter, Elasticsearch, data lakes","","---","","## Experience","","### Intuit","**Machine Learning Intern - Personalization Team**","San Francisco, CA | May 2022 - Aug 2022","","- Built resources that helped data scientists move machine learning projects from development into production workflows.","- Implemented large-scale ETL data processing pipelines using Spark for distributed computing workloads.","- Developed production-grade services and pipelines to make machine learning models available at web scale.","- Presented completed project outcomes to management and technical team members.","","### American Express","**Software Engineering Intern - Data Services Team**","Phoenix, AZ | May 2021 - Aug 2021","","- Researched, designed, and implemented a machine learning application for internal IT support workflows.","- Reduced technical staff support time by an average of 30 minutes per ticket during testing.","- Created a Slack bot to improve developer communication and increase team productivity.","- Deployed a Hugging Face pre-trained model for NLP processing and presented project metrics to executives.","","### Arizona State University","**Teaching Assistant**","Tempe, AZ | Aug 2020 - Dec 2022","","- Taught data structures and AI course material to 500+ students across undergraduate and graduate-level courses.","- Explained challenging computer science concepts through live sessions, office hours, and student support.","- Invited to continue teaching based on performance and department needs.","","---","","## Projects / Research","","### Artificial Intelligence Research","**Master's Thesis**","Tempe, AZ | Aug 2021 - Aug 2022","","- Collaborated on AI research intended for publication in a scientific journal.","- Conducted research at Arizona State University's Cooperative Robotic Systems Lab.","- Created and deployed scalable machine learning models to cloud infrastructure.","","### NASA Rocket Analysis","**Capstone Project**","Tempe, AZ | Aug 2020 - May 2021","","- Collaborated with NASA engineers to convert business requirements into technical specifications.","- Led a four-person development team using agile methodology.","- Delivered data analysis software and received positive sponsor feedback during performance review.","","---","","## Education","","### Arizona State University","**Bachelor of Computer Science & Master of Computer Science**","Tempe, AZ | 2017 - Sep 2022","","- Focus: Artificial Intelligence","","---","","## Awards","","- **Outstanding Teaching Assistant Recognition**, Arizona State University, 2022. Recognized for student support in data structures and AI coursework.","","---","","## Certifications","","- **AWS Certified Cloud Practitioner**, Amazon Web Services, 2022.",""].join("\n"))?;
+        "# [FULL NAME]","","**[Smaller Experience, Context, Role Title]**","[LinkedIn URL] | [Portfolio URL] | [GitHub URL] | [Email] | [Location]","","---","","## Summary","","[2-3 lines. State candidate identity, years or level, strongest technical focus, and 1-2 concrete achievements. Tailor this to the target job description.]","","---","","## Education","","### [University Name]","**[Degree Name]**","[Location] | [Start Date] - [End Date]","","- [Relevant focus, thesis, concentration, GPA if strong, or notable coursework.]","","---","","## Skills","","**Languages:** [Python], [JavaScript], [C++], [SQL], [Java]","**ML / Data:** [PyTorch], [TensorFlow], [scikit-learn], [Pandas], [NumPy]","**Cloud / Infrastructure:** [AWS], [Docker], [Kubernetes], [Linux], [CI/CD]","**Tools / Frameworks:** [Git], [FastAPI], [Node.js], [Spark], [PostgreSQL]","","---","","## Experience","","### [Company / Lab / Institution]","**[Role Title] - [Team or Focus Area]**","[Location] | [Start Date] - [End Date]","","- [Strongest job-relevant achievement with action, method, scale, and result.]","- [Second achievement with metric, technical depth, or production impact.]","- [Third achievement showing collaboration, ownership, or business/research value.]","","### [Company / Lab / Institution]","**[Role Title] - [Team or Focus Area]**","[Location] | [Start Date] - [End Date]","","- [Achievement bullet.]","- [Achievement bullet.]","- [Achievement bullet.]","","---","","## Projects / Research","","### [Project or Research Title]","**[Project Type / Context]**","[Link if available] | [Start Date] - [End Date]","","- [What was built, researched, or shipped.]","- [Technical methods, architecture, model, dataset, or system design.]","- [Result, metric, demo, paper, users, deployment, or measurable impact.]","","### [Project or Research Title]","**[Project Type / Context]**","[Link if available] | [Start Date] - [End Date]","","- [Achievement bullet.]","- [Achievement bullet.]","","---","","## Optional Sections","","Use only sections that add value for the target role.","","### Awards","","- **[Award Name]**, [Granting Organization], [Year]. [Brief context.]","","### Certifications","","- [Certification Name], [Issuer], [Year].","","### Selected Publications","","- [Author list]. \"[Paper Title].\" *[Venue]*, [Year]. [Status if not published.]","","### Teaching / Mentorship","","- [Teaching assistant, mentor, workshop, student supervision, or training impact.]","","### Work Authorization","","- [Authorized to work in X / Sponsorship status if relevant and desired.]",""].join("\n"))?;
+    write_if_missing(&profile_root.join("RESUME_TEMPLATE.md"), &[
+        "# Mitchell Bucklew","","**4x Intern, 3x TA, AI Researcher, Software Engineer**","https://www.linkedin.com/in/mitchell-bucklew | https://mitchellbucklew.dev | https://github.com/mitchellbucklew | Contact | Phoenix, AZ","","---","","## Summary","","Software engineer and AI researcher with internship experience across machine learning platforms, data services, and production software teams. Built scalable ML and data-processing systems using Python, Spark, AWS, and cloud deployment workflows, with teaching experience supporting 500+ students in data structures and AI coursework.","","---","","## Education","","### Arizona State University","**Bachelor of Computer Science & Master of Computer Science**","Tempe, AZ | 2017 - Sep 2022","","- Focus: Artificial Intelligence","","---","","## Skills","","**Languages:** Python, JavaScript, C, C++, Java, C#, SQL, PHP, HTML, CSS","**ML / Data:** Pandas, NumPy, scikit-learn, TensorFlow, PyTorch, Spark, neural networks","**Cloud / Infrastructure:** AWS, EC2, EMR, ECS, Athena, Lambda, Docker, Linux","**Tools / Frameworks:** Node.js, Git, Bash, Jupyter, Elasticsearch, data lakes","","---","","## Experience","","### Intuit","**Machine Learning Intern - Personalization Team**","San Francisco, CA | May 2022 - Aug 2022","","- Built resources that helped data scientists move machine learning projects from development into production workflows.","- Implemented large-scale ETL data processing pipelines using Spark for distributed computing workloads.","- Developed production-grade services and pipelines to make machine learning models available at web scale.","- Presented completed project outcomes to management and technical team members.","","### American Express","**Software Engineering Intern - Data Services Team**","Phoenix, AZ | May 2021 - Aug 2021","","- Researched, designed, and implemented a machine learning application for internal IT support workflows.","- Reduced technical staff support time by an average of 30 minutes per ticket during testing.","- Created a Slack bot to improve developer communication and increase team productivity.","- Deployed a Hugging Face pre-trained model for NLP processing and presented project metrics to executives.","","### Arizona State University","**Teaching Assistant**","Tempe, AZ | Aug 2020 - Dec 2022","","- Taught data structures and AI course material to 500+ students across undergraduate and graduate-level courses.","- Explained challenging computer science concepts through live sessions, office hours, and student support.","- Invited to continue teaching based on performance and department needs.","","---","","## Projects / Research","","### Artificial Intelligence Research","**Master's Thesis**","Tempe, AZ | Aug 2021 - Aug 2022","","- Collaborated on AI research intended for publication in a scientific journal.","- Conducted research at Arizona State University's Cooperative Robotic Systems Lab.","- Created and deployed scalable machine learning models to cloud infrastructure.","","### NASA Rocket Analysis","**Capstone Project**","Tempe, AZ | Aug 2020 - May 2021","","- Collaborated with NASA engineers to convert business requirements into technical specifications.","- Led a four-person development team using agile methodology.","- Delivered data analysis software and received positive sponsor feedback during performance review.","","---","","## Awards","","- **Outstanding Teaching Assistant Recognition**, Arizona State University, 2022. Recognized for student support in data structures and AI coursework.","","---","","## Certifications","","- **AWS Certified Cloud Practitioner**, Amazon Web Services, 2022.",""].join("\n"))?;
+    write_if_missing(&profile_root.join(".RESUME.typ"), PROFILE_RESUME_TYP_TEMPLATE)?;
     write_if_missing(&profile_root.join("USER.md"), &[
         "# User Profile","","This profile helps the agent understand your personal context beyond your resume. Fill in what applies, and feel free to add any other sections that matter to you.","","---","","## Career Goals","","[What kind of role, company, impact, or career direction are you targeting?]","","---","","## Constraints","","[Location restrictions, visa needs, salary minimums, remote requirements, timeline, etc.]","","---","","## Preferences","","[Tech stack, team size, industry, company stage, culture, work style, etc.]","","---","","## Notes for the Agent","","[Anything else you want the agent to know when tailoring resumes, writing outreach, or helping with your job search.]","","---","","*You can add any additional sections below — this template is just a starting point.*",""].join("\n"))?;
     Ok(project)
@@ -557,7 +792,7 @@ fn create_project_folder(input: CreateFolderInput) -> Result<String, String> {
 #[tauri::command]
 fn rename_project_path(input: RenamePathInput) -> Result<String, String> {
     if input.path.trim().is_empty() { return Err("Project root cannot be renamed".into()); }
-    if matches!(input.path.as_str(), "profile" | "hunt_run" | "import-links" | "resume") {
+    if matches!(input.path.as_str(), "profile" | "hunt_run" | "import-links" | "resume" | "pdf") {
         return Err("This default workspace folder cannot be renamed".into());
     }
     let new_name = validate_child_name(&input.new_name, "name")?;
@@ -684,6 +919,11 @@ fn delete_project_file(input: FilePathInput) -> Result<(), String> {
 #[tauri::command]
 fn delete_project_path(input: FilePathInput) -> Result<(), String> {
     if input.path.trim().is_empty() { return Err("Project root cannot be deleted".into()); }
+    // split path into top-level folder only
+    let top = input.path.split('/').next().unwrap_or("");
+    if matches!(top, "profile" | "hunt_run" | "import-links" | "resume" | "pdf") {
+        return Err("This is a protected project folder and cannot be deleted".into());
+    }
     let path = safe_project_path(&input.project_slug, &input.path)?;
     if !path.exists() { return Err("Path does not exist".into()); }
     if path.is_dir() { fs::remove_dir_all(path).map_err(|e| e.to_string()) } else { fs::remove_file(path).map_err(|e| e.to_string()) }
@@ -2788,20 +3028,7 @@ fn execute_tool(tool_name: &str, args: &Value, project_root: &std::path::Path, p
             Ok(format!("Wrote {} bytes to {path_str}", content.len()))
         }
         "render_resume" | "render_resume_pdf" | "render_pdf" => {
-            let path_str = args["path"].as_str().or_else(|| args["file"].as_str()).ok_or("render_resume requires a 'path' or 'file' argument")?;
-            let trimmed = path_str.trim().trim_start_matches("./");
-            if trimmed.is_empty() { return Err("render_resume path cannot be empty".into()); }
-            if std::path::Path::new(trimmed).is_absolute() || trimmed.contains("..") {
-                return Err("render_resume path must be workspace-relative and cannot contain ..".into());
-            }
-            if !trimmed.ends_with("/resume.md") || !trimmed.split('/').any(|part| part == "personalized-resume") {
-                return Err("render_resume only accepts personalized-resume/.../resume.md files".into());
-            }
-            let resolved = resolve_workspace_path(project_root, trimmed)?;
-            if !resolved.exists() { return Err(format!("resume.md not found: {trimmed}")); }
-            let job_path = trimmed.strip_suffix("/resume.md").ok_or("render_resume path must end with /resume.md")?.to_string();
-            let rendered = resume::render_resume(resume::ResumeInput { project_slug: project_slug.to_string(), job_path })?;
-            Ok(format!("Rendered PDF: {}", rendered.pdf_path))
+            return Err("PDF rendering is handled by the app UI. Write/update Markdown under `resume/` and tell the user to right-click the file or folder and choose \"Render to PDF\".".into());
         }
         "run_command" | "shell" | "exec" => {
             let cmd_str = args["command"].as_str().or_else(|| args["cmd"].as_str()).ok_or("run_command requires 'command'")?;
@@ -2845,7 +3072,7 @@ fn resolve_workspace_path(project_root: &std::path::Path, path_str: &str) -> Res
 fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunInput, on_event: Channel<AgentRunEvent>) -> Result<String, String> {
     let root = project_root(&input.project_slug)?;
     let run_id = input.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/RESUME.md, profile/USER.md, profile/resume_current.*, resources/, hunt_run/<name>/results.md (master job index), hunt_run/<name>/jobs-*/ (read-only scraped listings), hunt_run/<name>/personalized-resume/ (tailored resume outputs), applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create. Available local tools include read_file, write_file, run_command, search_web, and render_resume. Use render_resume only for personalized-resume/.../resume.md files.\n\n## Available commands\n{}", resume::skill_registry_prompt());
+    let mut prompt = format!("You are Drop the Grind's local job-search agent inside a macOS app. Help the user move from hunt intent to scraped jobs, tailored application packets, resumes, outreach, and follow-up tasks. Be concise, concrete, and workspace-aware. When useful, inspect or reference files under this project workspace: profile/RESUME.md, profile/USER.md, profile/resume_current.*, resources/, hunt_run/<name>/results.md (master job index), hunt_run/<name>/jobs-*/ (read-only scraped listings), resume/ (tailored resume outputs), applications/, and visible user files. Prefer actionable next steps over generic chat. If the user asks for work on a file, mention what file you need or what you will create. Available local tools include read_file, write_file, run_command, and search_web. PDF rendering is handled by the app UI: write/update Markdown under `resume/` and tell the user to right-click the file or folder and choose \"Render to PDF\". Do not attempt to render PDFs yourself.\n\n## Available commands\n{}", resume::skill_registry_prompt());
 
     // Inject hidden Drop the Grind agent context if it exists.
     let agents_path = root.join(".AGENTS.md");
@@ -2858,6 +3085,36 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
         }
     }
 
+    // Inject conversation transcript context if session_id is provided
+    if let Some(session_id) = &input.session_id {
+        if let Ok(c) = conn() {
+            if let Ok(mut stmt) = c.prepare("SELECT role, content FROM chat_messages WHERE session_id=?1 ORDER BY created_at") {
+                if let Ok(rows) = stmt.query_map(params![session_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                }) {
+                    let all_messages: Vec<(String, String)> = rows.filter_map(|r| r.ok()).collect();
+                    if !all_messages.is_empty() {
+                        let mut transcript = String::from("\n\n## Conversation History\n\n");
+                        let total = all_messages.len();
+                        let exclude_last = all_messages.last()
+                            .map(|(role, content)| role == "user" && content == &input.prompt)
+                            .unwrap_or(false);
+                        let end = if exclude_last { total - 1 } else { total };
+                        let keep: usize = 20;
+                        let start = if end > keep { end - keep } else { 0 };
+                        if start > 0 {
+                            transcript.push_str("(Earlier messages omitted for brevity. The following is the recent conversation.)\n\n");
+                        }
+                        for (role, content) in all_messages.iter().skip(start).take(end - start) {
+                            transcript.push_str(&format!("{}: {}\n", role, content));
+                        }
+                        prompt.push_str(&transcript);
+                    }
+                }
+            }
+        }
+    }
+
     prompt.push_str(&format!("\n\n---\n\nUser message:\n{}", input.prompt));
     if let Some(p) = input.linked_file_path { prompt.push_str(&format!("\n\nCurrently selected file: {}", p)); }
 
@@ -2866,6 +3123,14 @@ fn start_agent_run(app: AppHandle, state: State<AgentRunState>, input: AgentRunI
         let instructions = resume::skill_instructions(skill.name).unwrap_or("");
         prompt = format!("{}\n\n---\n### {}\n{}\n\n---\nUser message:\n{}", prompt, skill.name, instructions, input.prompt);
     }
+    // Emit the real context size so the frontend can display it accurately.
+    let _ = on_event.send(AgentRunEvent {
+        payload: None,
+        run_id: run_id.clone(),
+        kind: "context-size".into(),
+        text: prompt.len().to_string(),
+    });
+
     let model = input.model.unwrap_or_else(|| "gpt-5.5".into());
     let effort = input.effort.unwrap_or_else(|| "low".into());
     let root_str = root.to_str().ok_or("Invalid project path")?.to_string();
@@ -3215,7 +3480,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,read_binary_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,open_project_file,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,tavily_extract,import_job_links,list_hunt_profiles,save_hunt_config,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,rename_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,firecrawl_status,firecrawl_connect,firecrawl_disconnect,open_external_url,resume::validate_resume,resume::render_resume_pdf,resume::render_resume,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
+pub fn run(){ tauri::Builder::default().manage(AgentRunState::default()).plugin(tauri_plugin_opener::init()).invoke_handler(tauri::generate_handler![create_project,delete_project,list_projects,open_project,list_workspace_tree,read_text_file,read_binary_file,write_text_file,create_text_file,create_project_folder,rename_project_path,copy_project_path,copy_project_path_to,upload_project_file,upload_resume,remove_resume,delete_project_file,delete_project_path,reveal_project_path,open_project_file,save_source_config,get_source_config,generate_apify_files,create_hunt_run,start_hunt_apify,tavily_extract,import_job_links,list_hunt_profiles,save_hunt_config,list_jobs,update_job_status,generate_application_packet,list_packets,list_chat_sessions,create_chat_session,delete_chat_session,list_chat_messages,save_chat_message,fork_chat_session,rename_chat_session,create_task_file_from_chat,agent_respond,start_agent_run,cancel_agent_run,codex_status,codex_connect,codex_disconnect,apify_mcp_status,apify_mcp_connect,apify_mcp_disconnect,tavily_status,tavily_connect,tavily_disconnect,firecrawl_status,firecrawl_connect,firecrawl_disconnect,open_external_url,resume::validate_resume,resume::render_resume_pdf,resume::render_resume,resume::render_path_to_pdf,resume::list_skills]).run(tauri::generate_context!()).expect("error while running Drop the Grind"); }
 
 #[cfg(test)]
 mod tests { #[test] fn slugify_project_names(){assert_eq!(super::slugify("My 2026 Job Search!"),"my-2026-job-search");} #[test] fn rejects_traversal_paths(){assert!(super::safe_project_path("demo","../secrets.txt").is_err());} #[test] fn rejects_invalid_project_slug(){assert!(super::project_root("../demo").is_err());} #[test] fn normalizes_aliases(){ let v=serde_json::json!({"jobTitle":"Engineer","companyName":"Acme","jobUrl":"https://x"}); let j=super::normalize_job(&v).unwrap(); assert_eq!(j.title,"Engineer"); assert_eq!(j.company,"Acme"); } #[test] fn dedupe_is_stable(){assert_eq!(super::dedupe_key("A","B","C","D"),super::dedupe_key("a","b","c","d"));} #[test] fn light_clean_strips_navigation_and_noise(){
