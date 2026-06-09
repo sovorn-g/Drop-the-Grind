@@ -334,4 +334,4 @@ input:hover,textarea:hover,select:hover,.multi-select-trigger:hover{border-color
 /* Ensure @ and / autocomplete options are not styled like compose buttons */
 .chat-compose .mention-menu{background:#050505!important}
 .chat-compose .mention-menu button{background:#050505!important;background-image:none!important;box-shadow:none!important;border:0!important}
-.chat-compose .mention-menu button:hover,.chat-compose .mention-menu button.active{background:rgba(255,255,255,.05)!important;background-image:none!important}
+.chat-compose .mention-menu button:hover,.chat-compose .mention-menu button.active{background:rgba(255,255,255,.10)!important;background-image:none!important}
